@@ -8,7 +8,7 @@
  * EvaluationCriteria tables and this file is replaced by API calls.
  */
 
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 /* ---------------- Configuration ---------------- */
 
@@ -39,7 +39,7 @@ const skills = [
   { name: "Data analysis", aliases: ["data analysis", "analytics", "power bi", "tableau", "insights"], related: ["Excel", "SQL"], tip: "Structure answers as question → data → finding → recommendation." },
   { name: "Leadership", aliases: ["leadership", "mentoring", "lead", "led"], related: ["Teamwork"], tip: "Prepare one story where you took ownership and what changed because of it." },
   { name: "Marketing", aliases: ["marketing", "seo", "social media", "campaign", "campaigns", "engagement"], related: ["Data analysis"], tip: "Always connect campaigns to a measurable goal like reach, CTR or conversions." },
-  { name: "Recruitment", aliases: ["recruitment", "hiring", "sourcing", "onboarding"], related: ["Communication"], tip: "Explain a hiring pipeline stage by stage and how you measure quality of hire." },
+  { name: "Recruitment", aliases: ["recruitment", "talent acquisition", "sourcing", "onboarding", "screening candidates"], related: ["Communication"], tip: "Explain a hiring pipeline stage by stage and how you measure quality of hire." },
   { name: "Accounting", aliases: ["accounting", "bookkeeping", "ledger", "reconciliation", "financial statements"], related: ["Excel"], tip: "Walk through a reconciliation example and how you find discrepancies." },
 ];
 

@@ -113,7 +113,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
               <li><span>Interview sessions</span><b>{sessions.length}</b></li>
               <li><span>Answers stored</span><b>{sessions.reduce((n, s) => n + s.answers.length, 0)}</b></li>
               <li><span>Applications</span><b>{applications.length}</b></li>
-              <li><span>CV on file</span><b>{profile.fileName || "None"}</b></li>
+              <li><span>CV on file</span><b>{profile.cv?.fileName || profile.fileName || "None"}</b></li>
             </ul>
             <div className="btn-row">
               <button className="btn btn--ghost btn--sm" onClick={exportData}><Icon name="upload" size={15} /> Download my data</button>

@@ -16,6 +16,13 @@ function loadDB() {
   try {
     const db = JSON.parse(localStorage.getItem(DB_KEY));
     if (db?.version === DB_VERSION) return db;
+    // v3 → v4: keep the user's data, only fix the Recruitment aliases ("hiring" caused false matches in job descriptions).
+    if (db?.version === 3) {
+      const rec = db.config.skills.find((s) => s.name === "Recruitment");
+      if (rec) rec.aliases = rec.aliases.filter((a) => a !== "hiring").concat("talent acquisition");
+      db.version = DB_VERSION;
+      return db;
+    }
   } catch {
     /* fall through to a fresh seed */
   }

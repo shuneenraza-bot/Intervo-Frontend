@@ -311,7 +311,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
 
       {visible.length ? (
         <div className="cand-list">
-          {visible.map(({ app, cand, fit }, rank) => {
+          {visible.map(({ app, cand, profile, fit }, rank) => {
             const open = openId === app.id;
             return (
               <article className={`cand ${open ? "is-open" : ""}`} key={app.id}>
@@ -347,7 +347,15 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                       </ul>
                     </div>
                     <div className="cand__col">
-                      <h4>Skill evidence</h4>
+                      {profile?.cv && (profile.cv.education?.length > 0 || profile.cv.experienceYears > 0 || profile.cv.projects?.length > 0) && (
+                        <>
+                          <h4>From the CV</h4>
+                          <p className="cv-line">
+                            {[profile.cv.education?.[0]?.degree, profile.cv.experienceYears ? `${profile.cv.experienceYears} yrs experience` : "No dated experience", profile.cv.projects?.length ? `${profile.cv.projects.length} project${profile.cv.projects.length > 1 ? "s" : ""}` : null].filter(Boolean).join(" · ")}
+                          </p>
+                        </>
+                      )}
+                      <h4 className={profile?.cv ? "mt-sm" : ""}>Skill evidence</h4>
                       <div className="evidence">
                         {fit.evidence.map((e) => {
                           const inCv = fit.cv.matched.some((m) => m.name === e.name) ? "match" : fit.cv.partial.some((m) => m.name === e.name) ? "partial" : "missing";
