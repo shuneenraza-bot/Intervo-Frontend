@@ -18,13 +18,14 @@ const MAX_PITCH = 20;
 const IRIS_CENTER = [0.35, 0.65]; // iris position between eye corners, 0 = outer, 1 = inner
 const MIN_FACE_FRAMES = 5;
 
-/** Creates a Face Landmarker in VIDEO mode, preferring GPU and falling back to CPU. */
-export async function createFaceLandmarker() {
+/** Creates a Face Landmarker in VIDEO mode, preferring GPU and falling back to CPU.
+ *  Face login asks for 2 faces so it can reject frames with more than one person. */
+export async function createFaceLandmarker({ numFaces = 1 } = {}) {
   const fileset = { wasmLoaderPath, wasmBinaryPath };
   const options = (delegate) => ({
     baseOptions: { modelAssetPath: MODEL_URL, delegate },
     runningMode: "VIDEO",
-    numFaces: 1,
+    numFaces,
     outputFaceBlendshapes: true,
     outputFacialTransformationMatrixes: true,
   });
@@ -66,6 +67,67 @@ export function summariseFace(samples) {
   const variation = stdDev(faces.map((s) => s.smile)) + stdDev(faces.map((s) => s.brow));
   const expressiveness = Math.round(Math.min(100, (variation / 0.2) * 100));
   return { eyeContact, expressiveness };
+}
+
+/* =========================================================
+   Face login: landmark geometry template.
+   The template is the set of pairwise 3D distances between rigid key points,
+   divided by the distance between the eye centres so it doesn't depend on how
+   far the user sits from the camera. Only these numbers are stored.
+   ========================================================= */
+
+export const FACE_TEMPLATE_VERSION = 2;
+
+// Eye corners (first four, used for scale), nose, mouth corners, cheekbones,
+// jaw, chin, forehead and outer brows. Eyelids and lips are left out so that
+// blinking and small mouth movements barely change the template.
+const KEY_POINTS = [33, 133, 362, 263, 168, 6, 1, 2, 98, 327, 61, 291, 116, 345, 234, 454, 132, 361, 172, 397, 152, 10, 70, 300];
+const MAX_LOGIN_ANGLE = 15; // degrees; captures must be roughly frontal
+const GEOMETRY_SCALE = 0.12; // mean distance difference (in eye-distance units) that maps to similarity 0
+
+/** Detects faces in one frame. Returns the face count, and for a single face its landmarks, pose and blink score. */
+export function detectFaces(landmarker, video, timestamp) {
+  const res = landmarker.detectForVideo(video, timestamp);
+  const faces = res.faceLandmarks || [];
+  if (faces.length !== 1) return { count: faces.length };
+  const { yaw, pitch } = headPose(res.facialTransformationMatrixes?.[0]);
+  const b = Object.fromEntries((res.faceBlendshapes?.[0]?.categories || []).map((c) => [c.categoryName, c.score]));
+  return {
+    count: 1,
+    landmarks: faces[0],
+    frontal: yaw == null || (Math.abs(yaw) <= MAX_LOGIN_ANGLE && Math.abs(pitch) <= MAX_LOGIN_ANGLE),
+    blink: ((b.eyeBlinkLeft || 0) + (b.eyeBlinkRight || 0)) / 2,
+  };
+}
+
+/** Normalised geometry vector for one face, or null if key points are missing. */
+export function faceGeometry(lm, w, h) {
+  const pts = KEY_POINTS.map((i) => lm[i] && [lm[i].x * w, lm[i].y * h, lm[i].z * w]);
+  if (pts.some((p) => !p)) return null;
+  const mid = (a, b) => a.map((v, k) => (v + b[k]) / 2);
+  const eyes = dist(mid(pts[0], pts[1]), mid(pts[2], pts[3]));
+  if (!eyes) return null;
+  const out = [];
+  for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) out.push(dist(pts[i], pts[j]) / eyes);
+  return out;
+}
+
+/** 0–1 similarity between two geometry vectors (1 = identical). */
+export function compareGeometry(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d += Math.abs(a[i] - b[i]);
+  return Math.max(0, 1 - d / a.length / GEOMETRY_SCALE);
+}
+
+export function averageGeometry(list) {
+  const out = new Array(list[0].length).fill(0);
+  list.forEach((v) => v.forEach((x, i) => (out[i] += x / list.length)));
+  return out.map((x) => +x.toFixed(4));
+}
+
+function dist(a, b) {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 }
 
 /* Yaw/pitch in degrees from the 4×4 column-major facial transformation matrix. */

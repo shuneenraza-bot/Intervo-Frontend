@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { average, frameToTemplate, motionBetween, scoreTone, selectQuestions, wordCount } from "./lib";
+import { average, frameToTemplate, motionBetween, plural, scoreTone, selectQuestions, wordCount } from "./lib";
 import * as api from "./api";
 import { Card, Meter, Note, PageHeader, ScoreRing, Segmented } from "./ui";
 import { useCamera } from "./Camera";
@@ -368,7 +368,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
                 />
               </div>
               <div className="answer-bar">
-                <span className={`word-count ${words >= 60 ? "is-good" : ""}`}>{words} words <small>· aim for 60–150</small></span>
+                <span className={`word-count ${words >= 60 ? "is-good" : ""}`}>{plural(words, "word")} <small>· aim for 60–150</small></span>
                 <button className="btn btn--primary" type="submit">{isFollow ? "Submit follow-up" : "Submit answer"} <Icon name="arrowRight" size={16} /></button>
               </div>
               {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
@@ -426,7 +426,7 @@ function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLas
         <div>
           <strong>{result.followUp ? "Answer re-evaluated with follow-up" : "Answer evaluated"}</strong>
           <p>
-            {result.words} words
+            {plural(result.words, "word")}
             {question.type === "behavioral" ? ` · STAR parts ${result.starParts.length}/4` : ` · key points ${result.keyHits.length}/${question.keywords?.length || 0}`}
             {result.followUp && ` · was ${result.followUp.before}%`}
           </p>

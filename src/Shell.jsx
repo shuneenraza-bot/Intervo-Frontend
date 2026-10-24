@@ -1,6 +1,6 @@
 import { Icon } from "./Icons";
 import { initials } from "./lib";
-import { Brand, Toast } from "./ui";
+import { Brand, ThemeToggle, Toast } from "./ui";
 import { useStore } from "./store";
 
 export const NAV = {
@@ -80,6 +80,7 @@ export function Shell({ page, go, menuOpen, setMenuOpen, badges = {}, promo, chi
             ) : (
               <span className="status-pill status-pill--warn" title="Face verification not set up"><Icon name="alert" size={14} /> Face login off</span>
             )}
+            <ThemeToggle />
           </div>
         </header>
         {children}

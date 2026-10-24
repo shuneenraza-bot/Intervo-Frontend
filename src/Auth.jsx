@@ -2,9 +2,9 @@ import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { DEMO_ACCOUNTS } from "./data";
-import { passwordStrength } from "./lib";
+import { isLegacyTemplate, passwordStrength } from "./lib";
 import * as api from "./api";
-import { Brand, Meter, ScoreRing } from "./ui";
+import { Brand, Meter, ThemeToggle } from "./ui";
 import { FaceCapture } from "./Camera";
 
 const ROLE_COPY = {
@@ -22,9 +22,12 @@ export default function Auth() {
       <section className="auth__form-side">
         <div className="auth__top">
           <Brand />
-          <button className="btn btn--ghost btn--sm" onClick={() => setView(view === "signin" ? "signup" : "signin")}>
-            {view === "signin" ? <>Create account <Icon name="userPlus" size={15} /></> : <>Sign in <Icon name="arrowRight" size={15} /></>}
-          </button>
+          <div className="auth__top-actions">
+            <ThemeToggle />
+            <button className="btn btn--ghost btn--sm" onClick={() => setView(view === "signin" ? "signup" : "signin")}>
+              {view === "signin" ? <>Create account <Icon name="userPlus" size={15} /></> : <>Sign in <Icon name="arrowRight" size={15} /></>}
+            </button>
+          </div>
         </div>
         <div className="auth__form-wrap" key={view}>
           {view === "signin" ? (
@@ -76,27 +79,31 @@ function SignIn({ role, setRole, goSignup }) {
 
   if (pending) {
     const enrolled = !!pending.face?.template;
+    const upgrade = isLegacyTemplate(pending.face?.template);
     return (
       <>
         <button className="btn btn--text auth__back" onClick={() => setPending(null)}><Icon name="arrowLeft" size={15} /> Back</button>
         <p className="kicker">Step 2 of 2 · Face verification</p>
         <h1>{enrolled ? "Confirm it's you" : "Set up face login"}</h1>
         <p className="auth__lead">
-          {enrolled
-            ? "Your password is correct. A quick webcam check completes sign-in."
-            : "This account has no face template yet. Enrol now to protect future sign-ins."}
+          {upgrade
+            ? "Your password is correct. Face login has been upgraded, so we need to re-enrol your face once."
+            : enrolled
+              ? "Your password is correct. A quick webcam check — including a blink — completes sign-in."
+              : "This account has no face template yet. Enrol now to protect future sign-ins."}
         </p>
         <FaceCapture
           mode={enrolled ? "verify" : "enroll"}
           template={pending.face?.template}
           threshold={db.config.rules.faceThreshold}
           onComplete={(res) => {
-            if (!enrolled) {
+            // A template comes back on first enrolment and when an older template is re-enrolled.
+            if (res.template) {
               update((d) => {
                 d.users.find((x) => x.id === pending.id).face = { template: res.template, enrolledAt: Date.now() };
               });
             }
-            finish(enrolled ? "password+face" : "password+enrolled");
+            finish(!enrolled ? "password+enrolled" : res.template ? "password+reenrolled" : "password+face");
           }}
           onFallback={() => finish("password-fallback")}
           fallbackLabel={enrolled ? "Camera not working? Use password-only fallback" : "Skip for now"}
@@ -311,75 +318,117 @@ function SignUp({ initialRole, goSignin }) {
 
 /* ---------------- Right-hand showcase, mirrors the real dashboard ---------------- */
 
+const today = new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" });
+
+const SHOWCASE = {
+  candidate: {
+    pill: "Adaptive interview coaching",
+    title: ["Practise smarter.", "Improve with every session."],
+    text: "Intervo scores every answer by skill, remembers where you struggle, and builds your next interview around it.",
+    card: "Session report · Frontend Developer",
+    chip: today,
+    ring: { value: 72, label: "Overall" },
+    delta: { icon: "trend", text: "+9 vs last session" },
+    rows: [
+      { name: "React", value: 81 },
+      { name: "Communication", value: 68 },
+      { name: "Testing", value: 48, focus: true },
+    ],
+    foot: "Next session prioritises Testing — below 60% in 2 sessions.",
+    features: [["file", "CV & job match"], ["video", "Text · Voice · Video"], ["target", "Weakness tracking"]],
+  },
+  employer: {
+    pill: "For hiring teams",
+    title: ["Shortlist with evidence,", "not guesswork."],
+    text: "See how opted-in candidates perform on the skills your role needs — with every score explained.",
+    card: "Candidate fit · Junior Frontend Developer",
+    chip: today,
+    ring: { value: 78, label: "Suitability" },
+    delta: { icon: "checkCircle", text: "Meets criteria" },
+    rows: [
+      { name: "CV skill match", value: 83 },
+      { name: "Interview evidence", value: 79 },
+      { name: "Practice consistency", value: 62 },
+    ],
+    foot: "Final hiring decisions always stay with your team.",
+    features: [["sliders", "Weighted job skills"], ["chart", "Explainable scores"], ["shield", "Consent-based sharing"]],
+  },
+  admin: {
+    pill: "Platform configuration",
+    title: ["Add new roles", "without changing code."],
+    text: "Domains, skills, question templates and scoring rules are all managed as data.",
+    card: "Evaluation criteria",
+    chip: "Active",
+    ring: { value: 100, display: 6, label: "criteria" },
+    rows: [
+      { name: "Technical accuracy", value: 66, display: "×2", tone: "brand" },
+      { name: "Relevance", value: 66, display: "×2", tone: "brand" },
+      { name: "STAR structure", value: 66, display: "×2", tone: "brand" },
+    ],
+    foot: "Changes apply to the next interview instantly.",
+    features: [["layers", "Domains & roles"], ["book", "Question templates"], ["settings", "Scoring rules"]],
+  },
+};
+
+function PreviewRing({ value, display = value, label, size = 96, stroke = 8 }) {
+  const r = (size - stroke) / 2;
+  const c = 2 * Math.PI * r;
+  return (
+    <div className="ring" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle className="ring__track" cx={size / 2} cy={size / 2} r={r} strokeWidth={stroke} />
+        <circle className="ring__value" cx={size / 2} cy={size / 2} r={r} strokeWidth={stroke} strokeDasharray={c} strokeDashoffset={c - (value / 100) * c} />
+      </svg>
+      <div className="ring__label">
+        <strong>{display}</strong>
+        <span>{label}</span>
+      </div>
+    </div>
+  );
+}
+
 function Showcase({ role }) {
+  const s = SHOWCASE[role] || SHOWCASE.candidate;
   return (
     <aside className="auth__showcase" aria-hidden="true">
       <div className="showcase__grid" />
       <div className="showcase__content" key={role}>
-        {role === "employer" ? (
-          <>
-            <p className="showcase__kicker">For employers</p>
-            <h2>See why a candidate fits — not just a number.</h2>
-            <p className="showcase__text">Suitability combines CV match, interview evidence and consistency, with every factor shown. Only candidates who opt in appear.</p>
-            <div className="showcase__stack">
-              <div className="mini-card mini-card--score">
-                <ScoreRing value={78} size={74} stroke={7} />
-                <div>
-                  <span>Suitability · Junior Frontend</span>
-                  <strong>Sana Iqbal</strong>
-                  <small><Icon name="checkCircle" size={13} /> Meets success criteria</small>
+        <span className="showcase__pill"><i /> {s.pill}</span>
+        <h2>{s.title[0]}<br />{s.title[1]}</h2>
+        <p className="showcase__text">{s.text}</p>
+
+        <div className="preview">
+          <div className="preview__head">
+            <strong>{s.card}</strong>
+            <span className="preview__chip">{s.chip}</span>
+          </div>
+          <div className="preview__body">
+            <div className="preview__score">
+              <PreviewRing {...s.ring} />
+              {s.delta && <span className="preview__delta"><Icon name={s.delta.icon} size={13} /> {s.delta.text}</span>}
+            </div>
+            <div className="preview__rows">
+              {s.rows.map((row) => (
+                <div className="preview__row" key={row.name}>
+                  <span className="preview__name">{row.name}{row.focus && <em className="preview__tag">Needs focus</em>}</span>
+                  <Meter value={row.value} tone={row.tone} />
+                  <b>{row.display ?? row.value}</b>
                 </div>
-              </div>
-              <div className="mini-card mini-card--skills">
-                <span className="mini-card__title">Contributing factors</span>
-                {[["CV skill match", 83], ["Interview evidence", 79], ["Consistency", 62]].map(([s, v]) => (
-                  <div className="mini-skill" key={s}><span>{s}</span><Meter value={v} /><b>{v}</b></div>
-                ))}
-              </div>
+              ))}
             </div>
-          </>
-        ) : role === "admin" ? (
-          <>
-            <p className="showcase__kicker">Configuration</p>
-            <h2>New roles without new code.</h2>
-            <p className="showcase__text">Domains, job roles, skills, question templates and evaluation criteria are all data. Add a role and it's available to candidates immediately.</p>
-            <div className="showcase__stack">
-              <div className="mini-card mini-card--skills">
-                <span className="mini-card__title">Evaluation criteria</span>
-                {[["Technical accuracy", 2], ["Relevance", 2], ["Completeness", 2], ["STAR structure", 2], ["Clarity", 1]].map(([s, w]) => (
-                  <div className="mini-skill" key={s}><span>{s}</span><Meter value={w * 33} tone="brand" /><b>×{w}</b></div>
-                ))}
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <p className="showcase__kicker">How Intervo coaches you</p>
-            <h2>Practice that remembers<br />where you struggled.</h2>
-            <p className="showcase__text">Every answer is scored per skill. Skills that stay weak across sessions come back first next time.</p>
-            <div className="showcase__stack">
-              <div className="mini-card mini-card--score">
-                <ScoreRing value={72} size={74} stroke={7} />
-                <div>
-                  <span>Last session</span>
-                  <strong>Frontend Developer</strong>
-                  <small><Icon name="trend" size={13} /> +9 since last week</small>
-                </div>
-              </div>
-              <div className="mini-card mini-card--skills">
-                <span className="mini-card__title">Skill history</span>
-                {[["React", 81], ["Communication", 68], ["Testing", 48]].map(([s, v]) => (
-                  <div className="mini-skill" key={s}><span>{s}</span><Meter value={v} /><b>{v}</b></div>
-                ))}
-              </div>
-              <div className="mini-card mini-card--focus">
-                <Icon name="target" size={16} />
-                <span><b>Testing</b> stayed below 60% in 2 sessions — prioritised next.</span>
-              </div>
-            </div>
-          </>
-        )}
+          </div>
+          <div className="preview__foot"><Icon name="target" size={15} /> <span>{s.foot}</span></div>
+        </div>
+
+        <ul className="showcase__features">
+          {s.features.map(([icon, label]) => (
+            <li key={label}><span><Icon name={icon} size={16} /></span>{label}</li>
+          ))}
+        </ul>
       </div>
+      <p className="showcase__foot">
+        <Icon name="shield" size={14} /> Face-verified sign-in <i /> Consent-first data sharing
+      </p>
     </aside>
   );
 }

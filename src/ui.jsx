@@ -1,8 +1,20 @@
 import { useEffect } from "react";
 import { Icon } from "./Icons";
 import { scoreTone } from "./lib";
+import { useTheme } from "./theme";
 
 /* Shared building blocks used by every portal. */
+
+export function ThemeToggle() {
+  const [theme, toggle] = useTheme();
+  const dark = theme === "dark";
+  const label = dark ? "Switch to light theme" : "Switch to dark theme";
+  return (
+    <button type="button" className="icon-btn theme-toggle" onClick={toggle} aria-label={label} title={label}>
+      <Icon name={dark ? "sun" : "moon"} size={17} />
+    </button>
+  );
+}
 
 export function Brand({ subtitle = "Interview coaching" }) {
   return (

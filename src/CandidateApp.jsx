@@ -1,7 +1,7 @@
 import { useEffect, useMemo } from "react";
 import { Icon } from "./Icons";
 import { useCandidateData, useStore } from "./store";
-import { matchSkills, skillPerformance } from "./lib";
+import { matchSkills, plural, skillPerformance } from "./lib";
 import * as api from "./api";
 import Overview from "./Overview";
 import CVPage from "./CVPage";
@@ -41,7 +41,7 @@ export function CandidatePromo({ go, weakCount }) {
   return (
     <div className="sidebar__promo">
       <span className="sidebar__promo-icon"><Icon name="sparkle" size={16} /></span>
-      <strong>{weakCount ? `${weakCount} weak skill${weakCount > 1 ? "s" : ""} to work on` : "Ready for a quick round?"}</strong>
+      <strong>{weakCount ? `${plural(weakCount, "weak skill")} to work on` : "Ready for a quick round?"}</strong>
       <p>{weakCount ? "Your next session starts with them automatically." : "Five questions, about ten minutes. Weak skills come first."}</p>
       <button className="btn btn--primary btn--sm" onClick={() => go("interview")}>Start practice <Icon name="arrowRight" size={14} /></button>
     </div>

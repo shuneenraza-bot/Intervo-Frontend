@@ -22,6 +22,8 @@ export function timeAgo(ts) {
   if (d < 14) return "1 week ago";
   return `${Math.floor(d / 7)} weeks ago`;
 }
+/** "1 session", "2 sessions" — pass the plural form when it isn't just word + "s". */
+export const plural = (n, word, many = `${word}s`) => `${n} ${n === 1 ? word : many}`;
 export const initials = (name = "") => name.split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase() || "U";
 export const firstName = (name = "") => name.split(/\s+/)[0] || "there";
 
@@ -238,7 +240,7 @@ export function suitability({ job, profile, sessions, config }) {
     factors: [
       { key: "cv", label: "CV skill match", value: cv.percentage, weight: w.cv, detail: `${cv.matched.length} matched, ${cv.partial.length} partial, ${cv.missing.length} missing` },
       { key: "interview", label: "Interview evidence", value: interview, weight: w.interview, detail: withData.length ? `Scored on ${withData.length} of ${job.skills.length} required skills (${coverage}% coverage)` : "No interview answers on this job's skills yet" },
-      { key: "consistency", label: "Practice consistency", value: consistency, weight: w.consistency, detail: `${sessions.length} session${sessions.length === 1 ? "" : "s"}, average trend ${trend >= 0 ? "+" : ""}${trend}` },
+      { key: "consistency", label: "Practice consistency", value: consistency, weight: w.consistency, detail: `${plural(sessions.length, "session")}, average trend ${trend >= 0 ? "+" : ""}${trend}` },
     ],
     cv, evidence, avgScore,
     meetsCriteria: avgScore >= (job.success?.minScore ?? 0) && cv.percentage >= (job.success?.minMatch ?? 0),
@@ -246,12 +248,15 @@ export function suitability({ job, profile, sessions, config }) {
   };
 }
 
-/* ---------- Face template (prototype) ----------
- * The production system uses MediaPipe on the server and stores an encrypted
- * template. Here a centred, downscaled, z-normalised grayscale patch acts as
- * the template so enrolment → verification → threshold can be demonstrated
- * end-to-end without storing a raw image.
+/* ---------- Face template ----------
+ * Current templates are MediaPipe landmark geometry: { v: 2, method: "landmarks", features }
+ * (see faceCues.js). Older accounts hold a plain array — a centred, downscaled,
+ * z-normalised grayscale patch. The pixel functions below are kept as the
+ * fallback when MediaPipe can't load, and to verify those older templates.
  */
+export const isLandmarkTemplate = (t) => t?.v === 2 && Array.isArray(t.features);
+export const isLegacyTemplate = (t) => Array.isArray(t);
+
 const T = 24;
 
 export function frameToTemplate(video, canvas) {

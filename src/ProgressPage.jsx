@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "./Icons";
-import { average, formatDate, scoreTone } from "./lib";
+import { average, formatDate, plural, scoreTone } from "./lib";
 import { Card, Empty, LineChart, Meter, PageHeader, Sparkline, Stat } from "./ui";
 
 export default function ProgressPage({ db, sessions, performance, go }) {
@@ -24,7 +24,7 @@ export default function ProgressPage({ db, sessions, performance, go }) {
         <Stat label="Sessions" value={sessions.length} hint="Completed practice rounds" icon="mic" accent="blue" />
         <Stat label="Average" value={sessions.length ? `${average(scores)}%` : "—"} hint="Across all sessions" icon="chart" accent="green" />
         <Stat label="Most improved" value={improved ? improved.skill : "—"} hint={improved ? `${improved.trend >= 0 ? "+" : ""}${improved.trend} points since first answer` : "Needs 2+ answers on a skill"} icon="trend" accent="violet" />
-        <Stat label="Weaknesses" value={weak.length} hint={`${performance.length} skills tracked`} icon="target" accent="amber" />
+        <Stat label="Weaknesses" value={weak.length} hint={`${plural(performance.length, "skill")} tracked`} icon="target" accent="amber" />
       </section>
 
       <section className="grid grid--overview">
@@ -38,7 +38,7 @@ export default function ProgressPage({ db, sessions, performance, go }) {
                 <li key={w.skill}>
                   <div className="coach-list__head">
                     <strong>{w.skill}</strong>
-                    <span className="field__hint">{w.sessions} sessions</span>
+                    <span className="field__hint">{plural(w.sessions, "session")}</span>
                     <span className="pill pill--low">{w.avg}%</span>
                   </div>
                   <p>{skills.find((s) => s.name === w.skill)?.tip}</p>
@@ -77,7 +77,7 @@ export default function ProgressPage({ db, sessions, performance, go }) {
         )}
       </Card>
 
-      <Card title="Session history" subtitle={`${sessions.length} sessions`} className="mt">
+      <Card title="Session history" subtitle={plural(sessions.length, "session")} className="mt">
         {sessions.length ? (
           <ul className="history">
             {sessions.map((s) => {
@@ -88,7 +88,7 @@ export default function ProgressPage({ db, sessions, performance, go }) {
                     <span className="session-list__icon"><Icon name={s.mode === "video" ? "video" : s.mode === "voice" ? "mic" : "message"} size={16} /></span>
                     <div>
                       <strong>{s.roleTitle}</strong>
-                      <span>{formatDate(s.date)} · {s.answers.length} questions · {s.mode} mode</span>
+                      <span>{formatDate(s.date)} · {plural(s.answers.length, "question")} · {s.mode} mode</span>
                     </div>
                     <span className={`pill pill--${scoreTone(s.score, rules.weakThreshold)}`}>{s.score}%</span>
                     <Icon name="chevronRight" size={16} className="history__chev" />

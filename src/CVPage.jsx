@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { extractSkills, matchSkills } from "./lib";
+import { extractSkills, matchSkills, plural } from "./lib";
 import { ACCEPTED, CVError, MAX_FILE_MB, educationLevel, extractText, monthsBetween } from "./cvParser";
 import * as api from "./api";
 import { Card, Empty, Modal, Note, PageHeader, ScoreRing, Segmented, Weight } from "./ui";
@@ -99,7 +99,7 @@ export default function CVPage({ user, db, profile, go }) {
     try {
       const parsed = await api.analyzeCV({ file }, (step) => setStatus((s) => ({ ...s, step })));
       await new Promise((r) => setTimeout(r, 350)); // let the step animation land
-      saveCV(parsed, `CV analysed — ${parsed.skills.length} skills found`);
+      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`);
       setStatus({ state: "idle" });
     } catch (e) {
       const known = e instanceof CVError || e instanceof api.ApiError;
@@ -113,7 +113,7 @@ export default function CVPage({ user, db, profile, go }) {
     if (pasted.trim().length < 30) return setStatus({ state: "error", message: "Paste a bit more of your CV — at least a few lines." });
     try {
       const parsed = await api.analyzeCV({ text: pasted });
-      saveCV(parsed, `CV analysed — ${parsed.skills.length} skills found`);
+      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`);
       setPasteMode(false);
       setStatus({ state: "idle" });
     } catch (e) {
@@ -142,7 +142,7 @@ export default function CVPage({ user, db, profile, go }) {
       checks.push({
         label: `Experience: ${jdParsed.minYears}+ year${jdParsed.minYears > 1 ? "s" : ""} asked`,
         ok: (cv.experienceYears || 0) >= jdParsed.minYears,
-        detail: cv.experienceYears ? `Your CV shows about ${cv.experienceYears} year${cv.experienceYears === 1 ? "" : "s"}` : jdParsed.fresherFriendly ? "No experience listed, but the role is open to fresh graduates" : "No dated experience found in your CV",
+        detail: cv.experienceYears ? `Your CV shows about ${plural(cv.experienceYears, "year")}` : jdParsed.fresherFriendly ? "No experience listed, but the role is open to fresh graduates" : "No dated experience found in your CV",
         soft: jdParsed.fresherFriendly,
       });
     }

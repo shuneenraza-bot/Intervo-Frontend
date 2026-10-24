@@ -90,7 +90,7 @@ const rules = {
   weakMinSessions: 2, // …across at least this many sessions becomes a persistent weakness
   followUpBelow: 55, // completeness below this triggers a follow-up question
   defaultQuestions: 5,
-  faceThreshold: 0.55, // prototype face-template similarity threshold
+  faceThreshold: 0.55, // minimum face-template similarity (0–1) to accept a sign-in
   suitability: { cv: 40, interview: 45, consistency: 15 }, // employer score weights (%)
 };
 

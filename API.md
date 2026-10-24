@@ -55,7 +55,7 @@ Request:
   "company": "Northstar Digital", // employers only
   "password": "Demo@1234",
   "dataConsent": true,            // candidates must consent
-  "face": { "template": [0.12, -0.4, …] }  // 576 numbers, or null if skipped
+  "face": { "template": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] } }  // 276 landmark ratios, or null if skipped; older accounts may hold a 576-number array (pixel fallback)
 }
 ```
 Response `201`: `{ "token": "<jwt>", "user": User }`
@@ -173,7 +173,7 @@ User {
   id: string; role: "candidate" | "employer" | "admin";
   name: string; email: string; company?: string;      // company: employers only
   createdAt: number;
-  face: { template: number[]; enrolledAt: number } | null;
+  face: { template: { v: 2; method: "landmarks"; features: number[] } | number[]; enrolledAt: number } | null;
   lastLogin?: { at: number; method: string };
   // never return the password hash
 }

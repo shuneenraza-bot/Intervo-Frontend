@@ -1,5 +1,5 @@
 import { Icon } from "./Icons";
-import { average, firstName, formatDate, scoreTone } from "./lib";
+import { average, firstName, formatDate, plural, scoreTone } from "./lib";
 import { Card, Empty, LineChart, Meter, PageHeader, ScoreRing, Stat } from "./ui";
 
 export default function Overview({ user, db, sessions, profile, applications, performance, gap, go }) {
@@ -15,7 +15,7 @@ export default function Overview({ user, db, sessions, profile, applications, pe
     { done: !!user.face?.template, title: "Enrol your face for secure login", page: "profile" },
     { done: !!profile.result, title: "Analyse your CV against a target role", page: "cv" },
     { done: sessions.length > 0, title: "Complete your first mock interview", page: "interview" },
-    { done: sessions.length >= rules.weakMinSessions, title: `Reach ${rules.weakMinSessions} sessions to detect weaknesses`, page: "interview" },
+    { done: sessions.length >= rules.weakMinSessions, title: `Reach ${plural(rules.weakMinSessions, "session")} to detect weaknesses`, page: "interview" },
     { done: applications.length > 0, title: "Apply to a job and share your results", page: "jobs" },
   ];
   const doneCount = steps.filter((s) => s.done).length;
@@ -35,17 +35,17 @@ export default function Overview({ user, db, sessions, profile, applications, pe
           <ScoreRing value={sessions.length ? overall : null} size={132} stroke={11} label="avg score" />
         </div>
         <div className="hero-card__body">
-          <span className="badge badge--brand">{sessions.length ? `${sessions.length} session${sessions.length > 1 ? "s" : ""} recorded` : "No sessions yet"}</span>
+          <span className="badge badge--brand">{sessions.length ? `${plural(sessions.length, "session")} recorded` : "No sessions yet"}</span>
           <h2>
             {!sessions.length && "Let's get your baseline."}
             {sessions.length > 0 && !weak.length && "You're building a solid foundation."}
-            {weak.length > 0 && `${weak.length} skill${weak.length > 1 ? "s need" : " needs"} focused practice.`}
+            {weak.length > 0 && `${plural(weak.length, "skill")} ${weak.length === 1 ? "needs" : "need"} focused practice.`}
           </h2>
           <p>
             {!sessions.length
               ? "Run a short practice session and Intervo starts tracking your performance skill by skill."
               : weak.length
-              ? `${weak.map((w) => w.skill).join(", ")} stayed below ${rules.weakThreshold}% across ${rules.weakMinSessions}+ sessions. Your next session starts with ${weak.length > 1 ? "them" : "it"}.`
+              ? `${weak.map((w) => w.skill).join(", ")} stayed below ${rules.weakThreshold}% across ${rules.weakMinSessions}+ ${rules.weakMinSessions === 1 ? "session" : "sessions"}. Your next session starts with ${weak.length > 1 ? "them" : "it"}.`
               : "No persistent weaknesses detected yet. Keep practising to strengthen your history."}
           </p>
           <div className="hero-card__actions">
@@ -105,7 +105,7 @@ export default function Overview({ user, db, sessions, profile, applications, pe
               ))}
             </div>
           ) : (
-            <Empty icon="target" title="Nothing flagged yet" text={`Skills are flagged after ${rules.weakMinSessions} sessions below ${rules.weakThreshold}%.`} />
+            <Empty icon="target" title="Nothing flagged yet" text={`Skills are flagged after ${plural(rules.weakMinSessions, "session")} below ${rules.weakThreshold}%.`} />
           )}
         </Card>
       </section>
@@ -118,7 +118,7 @@ export default function Overview({ user, db, sessions, profile, applications, pe
                 <span className="session-list__icon"><Icon name={s.mode === "video" ? "video" : s.mode === "voice" ? "mic" : "message"} size={16} /></span>
                 <div>
                   <strong>{s.roleTitle}</strong>
-                  <span>{formatDate(s.date)} · {s.answers.length} questions · {s.mode} mode</span>
+                  <span>{formatDate(s.date)} · {plural(s.answers.length, "question")} · {s.mode} mode</span>
                 </div>
                 <span className={`pill pill--${scoreTone(s.score, rules.weakThreshold)}`}>{s.score}%</span>
               </li>

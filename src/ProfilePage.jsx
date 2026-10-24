@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials } from "./lib";
+import { formatDate, initials, isLegacyTemplate } from "./lib";
 import { Card, Modal, PageHeader, Switch } from "./ui";
 import { FaceCapture } from "./Camera";
 
@@ -94,6 +94,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
               <div>
                 <strong>{user.face?.template ? "Enabled" : "Not set up"}</strong>
                 <span>{user.face?.template ? `Template enrolled ${formatDate(user.face.enrolledAt)}` : "Sign-in currently uses your password only."}</span>
+                {isLegacyTemplate(user.face?.template) && <span>Face login was upgraded — re-enrol once (or at your next sign-in).</span>}
                 {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method.replace(/\+/g, " + ")}</span>}
               </div>
             </div>
@@ -105,7 +106,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
                 </button>
               )}
             </div>
-            <p className="field__hint">Only a numeric template is stored — never your photo.</p>
+            <p className="field__hint">Only face landmark measurements are stored — never your photo.</p>
           </Card>
 
           <Card title="Your data" subtitle="Retention and deletion">
@@ -146,7 +147,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
         <p className="muted">
           {confirm === "account"
             ? "Your account, face template, CV analysis, sessions and applications will be removed. This cannot be undone."
-            : `All ${sessions.length} sessions and your per-skill history will be removed. Weakness detection starts again from zero.`}
+            : `${sessions.length === 1 ? "Your 1 session" : `All ${sessions.length} sessions`} and your per-skill history will be removed. Weakness detection starts again from zero.`}
         </p>
       </Modal>
     </>

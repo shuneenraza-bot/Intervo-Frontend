@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials, uid } from "./lib";
+import { formatDate, initials, plural, uid } from "./lib";
 import { Card, Empty, Modal, Note, PageHeader, Segmented, Stat, Switch, Weight } from "./ui";
 
 /*
@@ -39,7 +39,7 @@ function AdminOverview({ go }) {
         <Stat label="Candidates" value={db.users.filter((u) => u.role === "candidate").length} hint="Registered accounts" icon="user" accent="blue" />
         <Stat label="Employers" value={db.users.filter((u) => u.role === "employer").length} hint="Registered accounts" icon="building" accent="violet" />
         <Stat label="Sessions" value={db.sessions.length} hint="Interviews completed" icon="mic" accent="green" />
-        <Stat label="Open jobs" value={db.jobs.filter((j) => j.status === "open").length} hint={`${db.applications.length} applications`} icon="briefcase" accent="amber" />
+        <Stat label="Open jobs" value={db.jobs.filter((j) => j.status === "open").length} hint={plural(db.applications.length, "application")} icon="briefcase" accent="amber" />
       </section>
       <div className="tile-grid">
         {tiles.map((t) => (
@@ -105,7 +105,7 @@ function DomainsRoles() {
             {domains.map((d) => (
               <li key={d.id}>
                 <span className="admin-list__icon"><Icon name="layers" size={15} /></span>
-                <div><strong>{d.name}</strong><span>{roles.filter((r) => r.domainId === d.id).length} roles</span></div>
+                <div><strong>{d.name}</strong><span>{plural(roles.filter((r) => r.domainId === d.id).length, "role")}</span></div>
                 <button className="icon-btn icon-btn--sm" onClick={() => removeDomain(d.id)} aria-label={`Delete ${d.name}`}><Icon name="trash" size={14} /></button>
               </li>
             ))}
@@ -214,7 +214,7 @@ function Skills() {
         actions={<button className="btn btn--primary" onClick={() => setEditing({ name: "", aliases: [], related: [], tip: "" })}><Icon name="plus" size={16} /> New skill</button>} />
       <div className="toolbar">
         <div className="search"><Icon name="search" size={17} /><input placeholder="Search skills" value={q} onChange={(e) => setQ(e.target.value)} /></div>
-        <span className="field__hint">{list.length} skills</span>
+        <span className="field__hint">{plural(list.length, "skill")}</span>
       </div>
       <Card>
         <div className="table table--skills" role="table">
@@ -300,7 +300,7 @@ function Questions() {
           <option>All</option>
           {db.config.skills.map((s) => <option key={s.name}>{s.name}</option>)}
         </select>
-        <span className="field__hint">{list.length} templates</span>
+        <span className="field__hint">{plural(list.length, "template")}</span>
       </div>
       <div className="q-list">
         {list.map((q) => (
@@ -438,7 +438,7 @@ function Users() {
                 <span><span className={`role-pill role-pill--${u.role}`}>{u.role}</span></span>
                 <span>{u.face?.template ? <span className="badge badge--good">Enrolled</span> : <span className="badge badge--muted">Not set</span>}</span>
                 <span className="table__muted">
-                  {u.role === "candidate" ? `${db.sessions.filter((s) => s.userId === u.id).length} sessions` : u.role === "employer" ? `${db.jobs.filter((j) => j.employerId === u.id).length} jobs` : "—"}
+                  {u.role === "candidate" ? plural(db.sessions.filter((s) => s.userId === u.id).length, "session") : u.role === "employer" ? plural(db.jobs.filter((j) => j.employerId === u.id).length, "job") : "—"}
                 </span>
                 <span className="table__muted">{formatDate(u.createdAt)}</span>
               </div>

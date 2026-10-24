@@ -5,6 +5,15 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frontend</title>
+    <script>
+      /* Apply the saved or system theme before first paint (see src/theme.js) */
+      (function () {
+        var t;
+        try { t = localStorage.getItem("intervo.theme"); } catch (e) {}
+        if (t !== "light" && t !== "dark") t = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", t);
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

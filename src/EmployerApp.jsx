@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials, scoreTone, timeAgo } from "./lib";
+import { formatDate, initials, plural, scoreTone, timeAgo } from "./lib";
 import * as api from "./api";
 import { Card, Empty, Meter, Modal, Note, PageHeader, ScoreRing, Segmented, Stat, Weight } from "./ui";
 
@@ -85,7 +85,7 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
                     <span className="session-list__icon"><Icon name="briefcase" size={16} /></span>
                     <div><strong>{j.title}</strong><span>{j.location} · {j.mode} · posted {timeAgo(j.createdAt)}</span></div>
                     <span className={`badge ${j.status === "open" ? "badge--good" : "badge--muted"}`}>{j.status}</span>
-                    <button className="btn btn--ghost btn--sm" onClick={() => openCandidates(j.id)}>{n} applicant{n === 1 ? "" : "s"}</button>
+                    <button className="btn btn--ghost btn--sm" onClick={() => openCandidates(j.id)}>{plural(n, "applicant")}</button>
                   </li>
                 );
               })}
@@ -167,7 +167,7 @@ function JobPostings({ myJobs, openCandidates }) {
                   <button className="btn btn--text" onClick={() => toggleStatus(job)}>{job.status === "open" ? "Close posting" : "Reopen"}</button>
                   <div className="btn-row">
                     <button className="btn btn--ghost btn--sm" onClick={() => setEditing(job)}><Icon name="edit" size={14} /> Edit</button>
-                    <button className="btn btn--primary btn--sm" onClick={() => openCandidates(job.id)}>{n} applicant{n === 1 ? "" : "s"} <Icon name="arrowRight" size={14} /></button>
+                    <button className="btn btn--primary btn--sm" onClick={() => openCandidates(job.id)}>{plural(n, "applicant")} <Icon name="arrowRight" size={14} /></button>
                   </div>
                 </div>
               </article>
@@ -305,9 +305,9 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
         subtitle={`Score = CV match ×${w.cv}% + interview evidence ×${w.interview}% + consistency ×${w.consistency}%. Only candidates who opted in are shown.`} />
       <div className="toolbar">
         <select className="select select--lg" value={job?.id} onChange={(e) => { setJobId(e.target.value); setOpenId(null); }} aria-label="Job">
-          {myJobs.map((j) => <option key={j.id} value={j.id}>{j.title} — {db.applications.filter((a) => a.jobId === j.id).length} applicants</option>)}
+          {myJobs.map((j) => <option key={j.id} value={j.id}>{j.title} — {plural(db.applications.filter((a) => a.jobId === j.id).length, "applicant")}</option>)}
         </select>
-        {hidden > 0 && <span className="badge badge--muted"><Icon name="lock" size={12} /> {hidden} applicant{hidden > 1 ? "s" : ""} not sharing evidence</span>}
+        {hidden > 0 && <span className="badge badge--muted"><Icon name="lock" size={12} /> {plural(hidden, "applicant")} not sharing evidence</span>}
       </div>
 
       {visible.length ? (
@@ -321,7 +321,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                   <span className="avatar">{initials(cand.name)}</span>
                   <div className="cand__name">
                     <strong>{cand.name}</strong>
-                    <span>Applied {formatDate(app.date)} · {fit.cv.matched.length}/{job.skills.length} skills matched</span>
+                    <span>Applied {formatDate(app.date)} · {fit.cv.matched.length}/{plural(job.skills.length, "skill")} matched</span>
                   </div>
                   <div className="cand__factors">
                     {fit.factors.map((f) => (
@@ -352,7 +352,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                         <>
                           <h4>From the CV</h4>
                           <p className="cv-line">
-                            {[profile.cv.education?.[0]?.degree, profile.cv.experienceYears ? `${profile.cv.experienceYears} yrs experience` : "No dated experience", profile.cv.projects?.length ? `${profile.cv.projects.length} project${profile.cv.projects.length > 1 ? "s" : ""}` : null].filter(Boolean).join(" · ")}
+                            {[profile.cv.education?.[0]?.degree, profile.cv.experienceYears ? `${plural(profile.cv.experienceYears, "yr")} experience` : "No dated experience", profile.cv.projects?.length ? plural(profile.cv.projects.length, "project") : null].filter(Boolean).join(" · ")}
                           </p>
                         </>
                       )}
