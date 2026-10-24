@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DB_VERSION, seedDB } from "./data";
+import { clearToken, connectStore } from "./api";
 
 /*
  * App-wide store backed by localStorage. It plays the role of the PostgreSQL
@@ -78,6 +79,7 @@ export function StoreProvider({ children }) {
     } catch {
       /* ignore */
     }
+    clearToken();
     setAuthId("");
   }, []);
 
@@ -91,6 +93,9 @@ export function StoreProvider({ children }) {
     setDb(seedDB());
     logout();
   }, [logout]);
+
+  // Give the API layer access to the store: local mode reads/writes it, backend mode caches into it.
+  connectStore({ db, update, logout });
 
   const user = db.users.find((u) => u.id === authId) || null;
 

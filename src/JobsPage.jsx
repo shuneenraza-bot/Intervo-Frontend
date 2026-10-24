@@ -1,7 +1,8 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { matchSkills, timeAgo, uid, initials } from "./lib";
+import { matchSkills, timeAgo, initials } from "./lib";
+import * as api from "./api";
 import { Card, Empty, Meter, Modal, PageHeader, Segmented } from "./ui";
 
 export default function JobsPage({ user, db, profile, applications, go }) {
@@ -14,6 +15,10 @@ export default function JobsPage({ user, db, profile, applications, go }) {
   const skills = profile.skills || [];
   const saved = profile.savedJobs || [];
   const appliedIds = applications.map((a) => a.jobId);
+
+  useEffect(() => {
+    api.getJobs().catch((e) => notify(e.message, "bad"));
+  }, [notify]);
 
   const jobs = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -35,18 +40,23 @@ export default function JobsPage({ user, db, profile, applications, go }) {
     notify(on ? "Saved to your shortlist" : "Removed from shortlist");
   }
 
-  function apply() {
-    update((d) => {
-      d.applications.push({ id: uid("app"), jobId: applying.id, candidateId: user.id, date: Date.now(), consent });
-      if (consent) d.profiles[user.id] = { ...d.profiles[user.id], shareWithEmployers: true };
-    });
-    notify(consent ? `Applied — ${applying.company} can now see your results` : "Application sent without sharing results");
-    setApplying(null);
+  async function apply() {
+    try {
+      await api.applyToJob({ jobId: applying.id, candidateId: user.id, consent });
+      notify(consent ? `Applied — ${applying.company} can now see your results` : "Application sent without sharing results");
+      setApplying(null);
+    } catch (e) {
+      notify(e.message, "bad");
+    }
   }
 
-  function withdraw(jobId) {
-    update((d) => { d.applications = d.applications.filter((a) => !(a.jobId === jobId && a.candidateId === user.id)); });
-    notify("Application withdrawn");
+  async function withdraw(jobId) {
+    try {
+      await api.withdrawApplication({ jobId, candidateId: user.id });
+      notify("Application withdrawn");
+    } catch (e) {
+      notify(e.message, "bad");
+    }
   }
 
   return (

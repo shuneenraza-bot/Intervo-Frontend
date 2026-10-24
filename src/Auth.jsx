@@ -2,7 +2,8 @@ import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { DEMO_ACCOUNTS } from "./data";
-import { hashPassword, passwordStrength, uid } from "./lib";
+import { passwordStrength } from "./lib";
+import * as api from "./api";
 import { Brand, Meter, ScoreRing } from "./ui";
 import { FaceCapture } from "./Camera";
 
@@ -54,14 +55,14 @@ function SignIn({ role, setRole, goSignup }) {
   async function submit(e) {
     e.preventDefault();
     setError("");
-    const found = db.users.find((u) => u.email === email.trim().toLowerCase());
-    if (!found) return setError("No account found with that email.");
     setLoading(true);
-    const hash = await hashPassword(found.id, password);
-    setLoading(false);
-    if (hash !== found.passwordHash) return setError("Incorrect password.");
-    if (found.role !== role) return setError(`This account is registered as ${ROLE_COPY[found.role].label.toLowerCase()}. Switch the tab above.`);
-    setPending(found);
+    try {
+      setPending(await api.login({ email, password, role, remember }));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function finish(method) {
@@ -172,7 +173,7 @@ function SignIn({ role, setRole, goSignup }) {
 /* ---------------- Sign up: role → details → face enrolment ---------------- */
 
 function SignUp({ initialRole, goSignin }) {
-  const { db, update, login, notify } = useStore();
+  const { db, login, notify } = useStore();
   const [step, setStep] = useState(1);
   const [role, setRole] = useState(initialRole);
   const [form, setForm] = useState({ name: "", email: "", company: "", password: "", confirm: "", terms: false, dataConsent: false });
@@ -197,20 +198,14 @@ function SignUp({ initialRole, goSignin }) {
   }
 
   async function createAccount(face) {
-    const id = uid(role === "employer" ? "emp" : "cand");
-    const passwordHash = await hashPassword(id, form.password);
-    update((d) => {
-      d.users.push({
-        id, role, name: form.name.trim(), email: form.email.trim().toLowerCase(),
-        company: role === "employer" ? form.company.trim() : undefined,
-        passwordHash, createdAt: Date.now(),
-        face: face ? { template: face.template, enrolledAt: Date.now() } : null,
-        lastLogin: { at: Date.now(), method: face ? "signup+face" : "signup" },
-      });
-      if (role === "candidate") d.profiles[id] = { skills: [], shareWithEmployers: false, consentAt: Date.now() };
-    });
-    login(id, true);
-    notify("Account created — welcome to Intervo");
+    try {
+      const created = await api.signup({ role, name: form.name, email: form.email, company: form.company, password: form.password, dataConsent: form.dataConsent, face });
+      login(created.id, true);
+      notify("Account created — welcome to Intervo");
+    } catch (err) {
+      setError(err.message);
+      setStep(2);
+    }
   }
 
   return (

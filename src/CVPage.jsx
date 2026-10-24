@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { extractSkills, matchSkills } from "./lib";
-import { ACCEPTED, CVError, MAX_FILE_MB, educationLevel, extractText, monthsBetween, parseCV, parseJD } from "./cvParser";
+import { ACCEPTED, CVError, MAX_FILE_MB, educationLevel, extractText, monthsBetween } from "./cvParser";
+import * as api from "./api";
 import { Card, Empty, Modal, Note, PageHeader, ScoreRing, Segmented, Weight } from "./ui";
 
 const STEPS = [
@@ -64,7 +65,21 @@ export default function CVPage({ user, db, profile, go }) {
 
   const role = roles.find((r) => r.id === roleId) || roles[0];
   const domainRoles = roles.filter((r) => r.domainId === domainId);
-  const jdParsed = useMemo(() => (jd.trim().length > 30 ? parseJD(jd, skillConfig, role.skills) : null), [jd, skillConfig, role]);
+  // Live JD preview: parsed in the same render locally; debounced server request in backend mode.
+  // skillConfig is read inside parseJDSync, so it stays a dependency (re-parse when the admin edits skills).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const localJD = useMemo(() => (!api.USE_BACKEND && jd.trim().length > 30 ? api.parseJDSync(jd, role.skills) : null), [jd, skillConfig, role]);
+  const [remoteJD, setRemoteJD] = useState(null);
+  useEffect(() => {
+    if (!api.USE_BACKEND) return;
+    let live = true;
+    const t = setTimeout(() => {
+      if (jd.trim().length <= 30) return setRemoteJD(null);
+      api.parseJD(jd, role.skills).then((r) => live && setRemoteJD(r)).catch(() => live && setRemoteJD(null));
+    }, 400);
+    return () => { live = false; clearTimeout(t); };
+  }, [jd, role]);
+  const jdParsed = api.USE_BACKEND ? remoteJD : localJD;
   const result = profile.result;
 
   /* ---------- Persist ---------- */
@@ -82,28 +97,28 @@ export default function CVPage({ user, db, profile, go }) {
     setError("");
     setStatus({ state: "working", step: "read", fileName: file.name });
     try {
-      const text = await extractText(file, (step) => setStatus((s) => ({ ...s, step })));
-      setStatus((s) => ({ ...s, step: "parse" }));
+      const parsed = await api.analyzeCV({ file }, (step) => setStatus((s) => ({ ...s, step })));
       await new Promise((r) => setTimeout(r, 350)); // let the step animation land
-      const parsed = parseCV(text, skillConfig);
-      saveCV(
-        { ...parsed, fileName: file.name, fileType: file.name.split(".").pop().toUpperCase(), fileSize: file.size, parsedAt: Date.now(), text: text.slice(0, 20000) },
-        `CV analysed — ${parsed.skills.length} skills found`
-      );
+      saveCV(parsed, `CV analysed — ${parsed.skills.length} skills found`);
       setStatus({ state: "idle" });
     } catch (e) {
-      setStatus({ state: "error", message: e instanceof CVError ? e.message : "Something went wrong while reading this file. Try another format." });
-      if (!(e instanceof CVError)) console.error(e);
+      const known = e instanceof CVError || e instanceof api.ApiError;
+      setStatus({ state: "error", message: known ? e.message : "Something went wrong while reading this file. Try another format." });
+      if (!known) console.error(e);
     }
     if (fileRef.current) fileRef.current.value = "";
   }
 
-  function parsePasted() {
+  async function parsePasted() {
     if (pasted.trim().length < 30) return setStatus({ state: "error", message: "Paste a bit more of your CV — at least a few lines." });
-    const parsed = parseCV(pasted, skillConfig);
-    saveCV({ ...parsed, fileName: "", fileType: "TEXT", parsedAt: Date.now(), text: pasted.slice(0, 20000) }, `CV analysed — ${parsed.skills.length} skills found`);
-    setPasteMode(false);
-    setStatus({ state: "idle" });
+    try {
+      const parsed = await api.analyzeCV({ text: pasted });
+      saveCV(parsed, `CV analysed — ${parsed.skills.length} skills found`);
+      setPasteMode(false);
+      setStatus({ state: "idle" });
+    } catch (e) {
+      setStatus({ state: "error", message: e.message });
+    }
   }
 
   async function handleJdFile(file) {

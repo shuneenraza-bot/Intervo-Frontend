@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { average, evaluateAnswer, frameToTemplate, motionBetween, scoreTone, selectQuestions, uid, wordCount } from "./lib";
+import { average, frameToTemplate, motionBetween, scoreTone, selectQuestions, wordCount } from "./lib";
+import * as api from "./api";
 import { Card, Meter, Note, PageHeader, ScoreRing, Segmented } from "./ui";
 import { useCamera } from "./Camera";
 import { useSpeech } from "./useSpeech";
@@ -20,7 +21,7 @@ const REASON = {
 };
 
 export default function InterviewPage({ user, db, profile, performance, gap, targetRole, go }) {
-  const { update, notify } = useStore();
+  const { notify } = useStore();
   const { config } = db;
   const [stage, setStage] = useState("setup"); // setup | live | summary
   const [roleId, setRoleId] = useState(targetRole.id);
@@ -46,19 +47,22 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
     setStage("live");
   }
 
-  function finish(all) {
+  async function finish(all) {
     const session = {
-      id: uid("s"), userId: user.id, roleId: role.id, roleTitle: role.title, mode, date: Date.now(),
+      userId: user.id, roleId: role.id, roleTitle: role.title, mode, date: Date.now(),
       score: average(all.map((r) => r.score)),
       answers: all.map((r) => ({
         questionId: r.questionId, question: r.question, skill: r.skill, type: r.type, score: r.score, criteria: r.criteria,
         answer: r.answer, followUp: r.followUp || null, indicators: r.indicators || null, reason: r.reason,
       })),
     };
-    update((d) => { d.sessions.push(session); });
-    setSaved(session);
-    setStage("summary");
-    notify("Session saved to your skill history");
+    try {
+      setSaved(await api.saveSession(session));
+      setStage("summary");
+      notify("Session saved to your skill history");
+    } catch (e) {
+      notify(e.message, "bad");
+    }
   }
 
   /* ---------- Setup ---------- */
@@ -228,28 +232,37 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
   const text = isFollow ? followAnswer : answer;
   const words = wordCount(text);
 
-  function submit(e) {
+  const evaluating = useRef(false);
+  async function submit(e) {
     e?.preventDefault();
+    if (evaluating.current) return;
     speech.stop();
     if (words < 12) return setError(usesVoice ? "We need a little more — record at least two or three sentences." : "Write at least two or three sentences so the answer can be evaluated.");
     setError("");
     const indicators = mode === "video" ? summariseIndicators(samples.current) : null;
-    if (isFollow) {
-      // Re-evaluate the original answer together with the follow-up.
-      const combined = `${answer.trim()} ${followAnswer.trim()}`;
-      const ev = evaluateAnswer(combined, q, config);
-      setResults((r) => {
-        const next = [...r];
-        next[index] = { ...next[index], ...ev, answer: combined, followUp: { question: q.followUp, answer: followAnswer, before: next[index].score }, indicators: indicators || next[index].indicators, needsFollowUp: false };
-        return next;
-      });
-    } else {
-      const ev = evaluateAnswer(answer, q, config);
-      setResults((r) => {
-        const next = [...r];
-        next[index] = { ...ev, answer, questionId: q.id, question: q.text, skill: q.skill, type: q.type, reason: q.reason, indicators };
-        return next;
-      });
+    evaluating.current = true;
+    try {
+      if (isFollow) {
+        // Re-evaluate the original answer together with the follow-up.
+        const combined = `${answer.trim()} ${followAnswer.trim()}`;
+        const ev = await api.evaluateAnswer(combined, q);
+        setResults((r) => {
+          const next = [...r];
+          next[index] = { ...next[index], ...ev, answer: combined, followUp: { question: q.followUp, answer: followAnswer, before: next[index].score }, indicators: indicators || next[index].indicators, needsFollowUp: false };
+          return next;
+        });
+      } else {
+        const ev = await api.evaluateAnswer(answer, q);
+        setResults((r) => {
+          const next = [...r];
+          next[index] = { ...ev, answer, questionId: q.id, question: q.text, skill: q.skill, type: q.type, reason: q.reason, indicators };
+          return next;
+        });
+      }
+    } catch (err) {
+      return setError(err.message);
+    } finally {
+      evaluating.current = false;
     }
     samples.current = [];
     setPhase("feedback");

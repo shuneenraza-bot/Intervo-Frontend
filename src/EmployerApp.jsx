@@ -1,34 +1,44 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials, scoreTone, suitability, timeAgo, uid } from "./lib";
+import { formatDate, initials, scoreTone, timeAgo } from "./lib";
+import * as api from "./api";
 import { Card, Empty, Meter, Modal, Note, PageHeader, ScoreRing, Segmented, Stat, Weight } from "./ui";
 
-/** Ranks applicants for one job. Only consented, opted-in candidates expose evidence. */
-function useApplicants(jobId) {
-  const { db } = useStore();
-  return useMemo(() => {
-    const job = db.jobs.find((j) => j.id === jobId);
-    if (!job) return { job: null, visible: [], hidden: 0 };
-    const apps = db.applications.filter((a) => a.jobId === jobId);
-    const visible = [];
-    let hidden = 0;
-    apps.forEach((app) => {
-      const cand = db.users.find((u) => u.id === app.candidateId);
-      const profile = db.profiles[app.candidateId];
-      if (!cand) return;
-      if (!app.consent || profile?.shareWithEmployers === false) return hidden++;
-      const sessions = db.sessions.filter((s) => s.userId === cand.id);
-      visible.push({ app, cand, profile, sessions, fit: suitability({ job, profile, sessions, config: db.config }) });
-    });
-    visible.sort((a, b) => b.fit.total - a.fit.total);
-    return { job, visible, hidden };
-  }, [db, jobId]);
+const NO_APPLICANTS = { job: null, visible: [], hidden: 0 };
+
+/**
+ * Ranked applicants for each job id → { [jobId]: { job, visible, hidden } }.
+ * Only consented, opted-in candidates expose evidence. Local mode computes from
+ * the store in the same render; backend mode fetches and refetches when the store changes.
+ */
+function useApplicants(jobIds) {
+  const { db, notify } = useStore();
+  const key = jobIds.join(",");
+  const local = useMemo(
+    () => (api.USE_BACKEND ? null : Object.fromEntries((key ? key.split(",") : []).map((id) => [id, api.getCandidatesSync(id, db)]))),
+    [key, db]
+  );
+  const [fetched, setFetched] = useState({});
+  useEffect(() => {
+    if (!api.USE_BACKEND) return;
+    let live = true;
+    const ids = key ? key.split(",") : [];
+    Promise.all(ids.map((id) => api.getCandidates(id)))
+      .then((list) => live && setFetched(Object.fromEntries(ids.map((id, i) => [id, list[i]]))))
+      .catch((e) => live && notify(e.message, "bad"));
+    return () => { live = false; };
+  }, [key, db, notify]);
+  return local || fetched;
 }
 
 export default function EmployerApp({ page, go, params }) {
-  const { db, user } = useStore();
+  const { db, user, notify } = useStore();
   const myJobs = db.jobs.filter((j) => j.employerId === user.id).sort((a, b) => b.createdAt - a.createdAt);
+
+  useEffect(() => {
+    api.getJobs().catch((e) => notify(e.message, "bad"));
+  }, [notify]);
   const [selectedJob, setSelectedJob] = useState(params.jobId || myJobs[0]?.id || "");
 
   const openCandidates = (jobId) => go("candidates", { jobId });
@@ -48,16 +58,10 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
   const { db, user } = useStore();
   const apps = db.applications.filter((a) => myJobs.some((j) => j.id === a.jobId));
   const shared = apps.filter((a) => a.consent && db.profiles[a.candidateId]?.shareWithEmployers !== false);
-  const top = shared
-    .map((a) => {
-      const job = myJobs.find((j) => j.id === a.jobId);
-      const cand = db.users.find((u) => u.id === a.candidateId);
-      if (!cand) return null;
-      const fit = suitability({ job, profile: db.profiles[cand.id], sessions: db.sessions.filter((s) => s.userId === cand.id), config: db.config });
-      return { a, job, cand, fit };
-    })
-    .filter(Boolean)
-    .sort((x, y) => y.fit.total - x.fit.total);
+  const ranked = useApplicants(myJobs.map((j) => j.id));
+  const top = Object.values(ranked)
+    .flatMap(({ job, visible }) => visible.map(({ app, cand, fit }) => ({ a: app, job, cand, fit })))
+    .sort((x, y) => y.fit.total - x.fit.total || db.applications.indexOf(x.a) - db.applications.indexOf(y.a));
 
   return (
     <>
@@ -117,24 +121,21 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
 const EMPTY_JOB = { title: "", roleId: "", location: "", mode: "On-site", level: "Entry level", type: "Full-time", description: "", skills: [], success: { minScore: 60, minMatch: 60, notes: "" }, status: "open" };
 
 function JobPostings({ myJobs, openCandidates }) {
-  const { db, update, notify, user } = useStore();
+  const { db, notify, user } = useStore();
   const [editing, setEditing] = useState(null);
 
-  function save(job) {
-    update((d) => {
-      if (job.id) {
-        const i = d.jobs.findIndex((j) => j.id === job.id);
-        d.jobs[i] = job;
-      } else {
-        d.jobs.push({ ...job, id: uid("job"), employerId: user.id, company: user.company, createdAt: Date.now() });
-      }
-    });
-    notify(job.id ? "Job updated" : "Job posted — candidates can now apply");
-    setEditing(null);
+  async function save(job) {
+    try {
+      await api.saveJob(job, user);
+      notify(job.id ? "Job updated" : "Job posted — candidates can now apply");
+      setEditing(null);
+    } catch (e) {
+      notify(e.message, "bad");
+    }
   }
 
   function toggleStatus(job) {
-    update((d) => { d.jobs.find((j) => j.id === job.id).status = job.status === "open" ? "closed" : "open"; });
+    api.saveJob({ ...job, status: job.status === "open" ? "closed" : "open" }, user).catch((e) => notify(e.message, "bad"));
   }
 
   return (
@@ -286,8 +287,8 @@ const STATUS = [
 ];
 
 function Candidates({ myJobs, jobId, setJobId, go }) {
-  const { db, update } = useStore();
-  const { job, visible, hidden } = useApplicants(jobId);
+  const { db, notify } = useStore();
+  const { job, visible, hidden } = useApplicants(jobId ? [jobId] : [])[jobId] || NO_APPLICANTS;
   const [openId, setOpenId] = useState(null);
   const w = db.config.rules.suitability;
 
@@ -371,7 +372,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                       {fit.weak.length > 0 && <p className="field__hint">Working on: {fit.weak.join(", ")}</p>}
                       <div className="field">
                         <label>Your decision</label>
-                        <Segmented options={STATUS} value={app.status || "new"} onChange={(v) => update((d) => { d.applications.find((a) => a.id === app.id).status = v; })} />
+                        <Segmented options={STATUS} value={app.status || "new"} onChange={(v) => api.setApplicationStatus(app.id, v).catch((e) => notify(e.message, "bad"))} />
                       </div>
                     </div>
                   </div>

@@ -1,7 +1,8 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { Icon } from "./Icons";
 import { useCandidateData, useStore } from "./store";
 import { matchSkills, skillPerformance } from "./lib";
+import * as api from "./api";
 import Overview from "./Overview";
 import CVPage from "./CVPage";
 import JobsPage from "./JobsPage";
@@ -13,6 +14,11 @@ import ProfilePage from "./ProfilePage";
 export default function CandidateApp({ page, go }) {
   const { db, user } = useStore();
   const { sessions, profile, applications } = useCandidateData(user.id);
+
+  // Refresh this candidate's sessions into the store (a no-op read in local mode).
+  useEffect(() => {
+    api.getSessions(user.id).catch((e) => console.warn("Couldn't load sessions:", e.message));
+  }, [user.id]);
   const performance = useMemo(() => skillPerformance(sessions, db.config.rules), [sessions, db.config.rules]);
   const targetRole = db.config.roles.find((r) => r.id === profile.roleId) || db.config.roles[0];
   const gap = useMemo(() => profile.result || (profile.skills?.length ? matchSkills(profile.skills, targetRole.skills, db.config.skills) : null), [profile, targetRole, db.config.skills]);
