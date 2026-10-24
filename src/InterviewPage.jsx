@@ -207,7 +207,24 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
   /* Video: camera preview + presentation cues sampled every 500ms while recording */
   const cam = useCamera(mode === "video");
   const samples = useRef([]);
+  const faceSamples = useRef([]);
   const canvasRef = useRef(null);
+  const face = useFaceLandmarker(mode === "video");
+
+  /* Face cues: ~5 frames per second through MediaPipe, when the model loaded */
+  useEffect(() => {
+    if (mode !== "video" || !speech.listening || face.status !== "ready") return;
+    const t = setInterval(() => {
+      const video = cam.videoRef.current;
+      if (!video || video.readyState < 2) return;
+      try {
+        faceSamples.current.push(face.cues.sampleFace(face.landmarker, video, performance.now()));
+      } catch {
+        face.fail(); // never break the interview — eye contact just shows as unavailable
+      }
+    }, 200);
+    return () => clearInterval(t);
+  }, [mode, speech.listening, cam.videoRef, face]);
   useEffect(() => {
     if (mode !== "video" || !speech.listening) return;
     const prev = { raw: null };
@@ -239,7 +256,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
     speech.stop();
     if (words < 12) return setError(usesVoice ? "We need a little more — record at least two or three sentences." : "Write at least two or three sentences so the answer can be evaluated.");
     setError("");
-    const indicators = mode === "video" ? summariseIndicators(samples.current) : null;
+    const indicators = mode === "video" ? summariseIndicators(samples.current, face.status === "ready" ? face.cues.summariseFace(faceSamples.current) : null) : null;
     evaluating.current = true;
     try {
       if (isFollow) {
@@ -265,6 +282,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
       evaluating.current = false;
     }
     samples.current = [];
+    faceSamples.current = [];
     setPhase("feedback");
   }
 
@@ -321,6 +339,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
               <canvas ref={canvasRef} hidden />
               {cam.status !== "ready" && <div className="video-box__msg"><Icon name="camera" size={22} /> {cam.status === "denied" ? "Camera permission denied — you can still answer by voice." : cam.status === "unavailable" ? "No camera found — continue with voice." : "Starting camera…"}</div>}
               {speech.listening && <span className="video-box__rec"><i /> REC {mm}:{ss}</span>}
+              {cam.status === "ready" && <span className="video-box__face">{face.status === "loading" ? "Loading face cues…" : face.status === "ready" ? "Face cues on" : "Eye contact unavailable"}</span>}
             </div>
           )}
 
@@ -445,7 +464,37 @@ function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLas
 
 /* ---------- Video presentation indicators ---------- */
 
-function summariseIndicators(samples) {
+/* MediaPipe is loaded once, on first use in video mode, and shared across sessions. */
+let faceCuesPromise = null;
+function loadFaceCues() {
+  if (!faceCuesPromise) {
+    faceCuesPromise = import("./faceCues").then(async (cues) => ({ cues, landmarker: await cues.createFaceLandmarker() }));
+    faceCuesPromise.catch(() => { faceCuesPromise = null; });
+  }
+  return faceCuesPromise;
+}
+
+function useFaceLandmarker(enabled) {
+  const [state, setState] = useState({ status: enabled ? "loading" : "off" });
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    loadFaceCues().then(
+      ({ cues, landmarker }) => alive && setState({ status: "ready", cues, landmarker }),
+      () => alive && setState({ status: "unavailable" })
+    );
+    return () => { alive = false; };
+  }, [enabled]);
+  const fail = useCallback(() => {
+    faceCuesPromise = null; // retry on the next session
+    setState({ status: "unavailable" });
+  }, []);
+  return useMemo(() => ({ ...state, fail }), [state, fail]);
+}
+
+const INDICATOR_KEYS = ["lighting", "framing", "steadiness", "eyeContact", "expressiveness"];
+
+function summariseIndicators(samples, faceCues) {
   if (!samples.length) return null;
   const lit = samples.filter((s) => s.brightness > 70 && s.brightness < 200).length / samples.length;
   const present = samples.filter((s) => s.contrast > 14).length / samples.length;
@@ -455,12 +504,16 @@ function summariseIndicators(samples) {
     lighting: Math.round(lit * 100),
     framing: Math.round(present * 100),
     steadiness: Math.round(Math.max(0, Math.min(100, 100 - (avgMove - 2) * 6))),
+    eyeContact: faceCues?.eyeContact ?? null,
+    expressiveness: faceCues?.expressiveness ?? null,
   };
 }
 
 function averageIndicators(list) {
-  const keys = ["lighting", "framing", "steadiness"];
-  return Object.fromEntries(keys.map((k) => [k, Math.round(list.reduce((s, i) => s + i[k], 0) / list.length)]));
+  return Object.fromEntries(INDICATOR_KEYS.map((k) => {
+    const vals = list.map((i) => i[k]).filter((v) => typeof v === "number");
+    return [k, vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : null];
+  }));
 }
 
 function IndicatorCard({ indicators, compact = false }) {
@@ -468,16 +521,21 @@ function IndicatorCard({ indicators, compact = false }) {
     ["Lighting", indicators.lighting, "Face evenly lit"],
     ["Framing", indicators.framing, "Face visible in frame"],
     ["Steadiness", indicators.steadiness, "Limited camera / head movement"],
+    ["Eye contact", indicators.eyeContact, "Share of sampled frames facing the camera (head angle + iris position)"],
+    ["Expressiveness", indicators.expressiveness, "Variation in smile and brow movement across the answer"],
   ];
   const content = (
     <>
       <div className="criteria">
-        {rows.map(([label, v, hint]) => (
+        {rows.map(([label, v, hint]) => typeof v === "number" ? (
           <div className="criteria__row" key={label} title={hint}>
             <span>{label}</span><Meter value={v} /><b>{v}</b>
           </div>
+        ) : (
+          <div className="criteria__row criteria__row--muted" key={label} title={hint}>
+            <span>{label}</span><span className="field__hint">unavailable</span><b>—</b>
+          </div>
         ))}
-        <div className="criteria__row criteria__row--muted"><span>Eye contact</span><span className="field__hint">MediaPipe face mesh · backend phase</span><b>—</b></div>
       </div>
       <p className="field__hint">Observable presentation cues only — not a measure of confidence or personality.</p>
     </>

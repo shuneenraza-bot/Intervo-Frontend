@@ -1006,6 +1006,7 @@ textarea::placeholder { color: var(--subtle); }
 .video-box__msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; padding: 20px; color: #c9d2e8; font-size: 13px; text-align: center; }
 .video-box__rec { position: absolute; top: 12px; left: 12px; display: flex; align-items: center; gap: 7px; padding: 5px 10px; border-radius: 99px; color: #fff; background: rgba(15, 26, 51, .6); backdrop-filter: blur(6px); font-size: 11.5px; font-weight: 700; letter-spacing: .04em; font-variant-numeric: tabular-nums; }
 .video-box__rec i { width: 8px; height: 8px; border-radius: 50%; background: #ef4444; animation: blink 1s infinite; }
+.video-box__face { position: absolute; top: 12px; right: 12px; padding: 5px 10px; border-radius: 99px; color: #fff; background: rgba(15, 26, 51, .6); backdrop-filter: blur(6px); font-size: 11.5px; font-weight: 600; }
 @keyframes blink { 50% { opacity: .3; } }
 
 .voice { display: flex; align-items: center; gap: 14px; padding: 14px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--surface-2); transition: all .3s var(--ease); }
