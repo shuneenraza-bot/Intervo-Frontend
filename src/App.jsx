@@ -5,8 +5,10 @@ import "./App.css";
 
 import { StoreProvider, useStore } from "./store";
 import { skillPerformance } from "./lib";
+import { navigate, useHashPath } from "./router";
 import { Shell } from "./Shell";
 import Auth from "./Auth";
+import Landing from "./Landing";
 import CandidateApp, { CandidatePromo } from "./CandidateApp";
 import EmployerApp from "./EmployerApp";
 import AdminApp from "./AdminApp";
@@ -21,6 +23,7 @@ export default function App() {
 
 function Root() {
   const { user, db } = useStore();
+  const path = useHashPath();
   const [page, setPage] = useState("overview");
   const [params, setParams] = useState({});
   const [navKey, setNavKey] = useState(0);
@@ -77,7 +80,20 @@ function Root() {
     else window.scrollTo(0, 0);
   }
 
-  if (!user) return <Auth />;
+  /* Public routes: signed-out users see #/ (landing), #/login and #/signup; signed-in users always land on #/dashboard */
+  const authView = path === "/signup" ? "signup" : "login";
+  useEffect(() => {
+    if (user) navigate("/dashboard", { replace: true });
+    else if (path !== "/" && path !== "/login" && path !== "/signup") navigate("/", { replace: true });
+  }, [user, path]);
+
+  /* Each route starts at the top (e.g. landing → sign-up after scrolling) */
+  useEffect(() => {
+    if (lenisRef.current) lenisRef.current.scrollTo(0, { immediate: true });
+    else window.scrollTo(0, 0);
+  }, [path]);
+
+  if (!user) return path === "/" ? <Landing lenis={lenisRef} /> : <Auth view={authView} />;
 
   const pageProps = { page, go, params };
 

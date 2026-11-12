@@ -88,18 +88,18 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
         </div>
 
         <div className="stack">
-          <Card title="Face verification" subtitle="Second step at every sign-in">
+          <Card title="Face ID" subtitle="Sign in with your face instead of your password">
             <div className={`face-status ${user.face?.template ? "is-on" : ""}`}>
               <span className="face-status__icon"><Icon name={user.face?.template ? "shield" : "scan"} size={22} /></span>
               <div>
                 <strong>{user.face?.template ? "Enabled" : "Not set up"}</strong>
-                <span>{user.face?.template ? `Template enrolled ${formatDate(user.face.enrolledAt)}` : "Sign-in currently uses your password only."}</span>
-                {isLegacyTemplate(user.face?.template) && <span>Face login was upgraded — re-enrol once (or at your next sign-in).</span>}
-                {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method.replace(/\+/g, " + ")}</span>}
+                <span>{user.face?.template ? `Template enrolled ${formatDate(user.face.enrolledAt)}` : "You sign in with your password. Set up Face ID to sign in with a glance."}</span>
+                {isLegacyTemplate(user.face?.template) && <span>Face ID was upgraded — re-enrol once to keep using it.</span>}
+                {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method === "face" ? "Face ID" : user.lastLogin.method.replace(/\+/g, " + ")}</span>}
               </div>
             </div>
             <div className="btn-row">
-              <button className="btn btn--primary btn--sm" onClick={() => setEnrolOpen(true)}><Icon name="scan" size={15} /> {user.face?.template ? "Re-enrol face" : "Set up face login"}</button>
+              <button className="btn btn--primary btn--sm" onClick={() => setEnrolOpen(true)}><Icon name="scan" size={15} /> {user.face?.template ? "Re-enrol face" : "Set up Face ID"}</button>
               {user.face?.template && (
                 <button className="btn btn--ghost btn--sm" onClick={() => { update((d) => { d.users.find((u) => u.id === user.id).face = null; }); notify("Face template deleted"); }}>
                   Delete template
@@ -125,14 +125,14 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
         </div>
       </div>
 
-      <Modal open={enrolOpen} onClose={() => setEnrolOpen(false)} title="Face enrolment" subtitle="Centre your face in the oval with even lighting">
+      <Modal open={enrolOpen} onClose={() => setEnrolOpen(false)} title="Set up Face ID" subtitle="Centre your face in the oval with even lighting">
         {enrolOpen && (
           <FaceCapture
             mode="enroll"
             onComplete={({ template }) => {
               update((d) => { d.users.find((u) => u.id === user.id).face = { template, enrolledAt: Date.now() }; });
               setEnrolOpen(false);
-              notify("Face login enabled");
+              notify("Face ID enabled");
             }}
           />
         )}

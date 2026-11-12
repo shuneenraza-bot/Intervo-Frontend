@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "./Icons";
-import { averageTemplates, frameToTemplate, isLandmarkTemplate, motionBetween, similarity } from "./lib";
 
 /** Opens the webcam and keeps the stream bound to a <video>. */
 export function useCamera(active = true, { audio = false } = {}) {
@@ -42,7 +41,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------- Face engine: MediaPipe Face Landmarker, shared by every FaceCapture ---------- */
 
-const ENGINE_TIMEOUT = 15000; // past this, fall back to the pixel method
+const ENGINE_TIMEOUT = 15000; // past this, Face ID reports the model as unavailable
 let faceEnginePromise = null;
 function loadFaceEngine() {
   if (!faceEnginePromise) {
@@ -105,8 +104,9 @@ async function landmarkEnroll(engine, video, report) {
   };
 }
 
-/* Blink liveness + landmark comparison. A printed photo can't blink, so it fails. */
-async function landmarkVerify({ cues, landmarker }, video, template, threshold, report) {
+/* Blink liveness, then the live geometry. A printed photo can't blink, so it fails here.
+ * Matching against the enrolled template is done by the caller (api.login — on the server in backend mode). */
+async function landmarkLiveness({ cues, landmarker }, video, report) {
   report("Look at the camera and blink…");
   const start = performance.now();
   const frames = [];
@@ -131,60 +131,23 @@ async function landmarkVerify({ cues, landmarker }, video, template, threshold, 
   if (!sawFace) return { ok: false, message: MSG_NO_FACE };
   if (!blinked) return { ok: false, message: "Liveness check failed — no blink detected within 4 seconds. Blink naturally and try again." };
   if (!frames.length) return { ok: false, message: MSG_TURN };
-
-  const sim = cues.compareGeometry(cues.averageGeometry(frames), template.features);
-  if (sim < threshold) return { ok: false, message: `Face didn't match the enrolled template (similarity ${sim.toFixed(2)}, needs ${threshold}).` };
   report(null, 100);
-  return { ok: true, message: `Verified · blink detected · similarity ${sim.toFixed(2)}`, result: { similarity: sim } };
+  return { ok: true, template: { v: cues.FACE_TEMPLATE_VERSION, method: "landmarks", features: cues.averageGeometry(frames) } };
 }
 
-/* ---------- Pixel fallback (used when MediaPipe can't load) ---------- */
-
-async function pixelCapture(video, canvas, steps, gap, report) {
-  const frames = [];
-  for (let i = 0; i < steps; i++) {
-    await wait(gap);
-    const t = frameToTemplate(video, canvas);
-    if (t) frames.push(t);
-    report(null, Math.round(((i + 1) / steps) * 100));
-  }
-  return frames.length < steps || frames[0].contrast < 8 ? null : frames;
-}
-
-async function pixelEnroll(video, canvas, report) {
-  report("Hold still, then turn your head slightly…");
-  const frames = await pixelCapture(video, canvas, 3, 650, report);
-  if (!frames) return { ok: false, message: "We couldn't see a clear face. Check your lighting and try again." };
-  return {
-    ok: true,
-    message: "Face template saved (basic mode). Only the template is stored — never the photo.",
-    result: { template: averageTemplates(frames.map((f) => f.vector)), quality: Math.round(Math.min(100, frames[0].contrast * 1.6)) },
-  };
-}
-
-async function pixelVerify(video, canvas, template, threshold, report) {
-  report("Look at the camera and blink…");
-  const frames = await pixelCapture(video, canvas, 4, 380, report);
-  if (!frames) return { ok: false, message: "We couldn't see a clear face. Check your lighting and try again." };
-  const live = motionBetween(frames[0].raw, frames[frames.length - 1].raw);
-  const sim = Math.max(...frames.map((f) => similarity(f.vector, template)));
-  if (live < 0.8) return { ok: false, message: "Liveness check failed — the image didn't move. Blink or move slightly and retry." };
-  if (sim < threshold) return { ok: false, message: `Face didn't match the enrolled template (similarity ${sim.toFixed(2)}, needs ${threshold}).` };
-  return { ok: true, message: `Verified (basic mode) · similarity ${sim.toFixed(2)}`, result: { similarity: sim } };
-}
+const MSG_NO_MODEL = "The face model couldn't load, so Face ID isn't available right now. Check your connection and try again.";
 
 /**
- * Face enrolment / verification step.
+ * Face ID enrolment / verification step.
  *  mode="enroll": requires exactly one face, captures 3 samples and returns an
- *                 averaged landmark-geometry template.
- *  mode="verify": blink liveness within 4s, then compares live geometry to `template`.
- *                 An older pixel template is replaced by re-enrolling once
- *                 (onComplete then receives a new `template`).
- * If MediaPipe can't load, the older pixel method is used instead.
+ *                 averaged landmark-geometry template via onComplete({ template, quality }).
+ *  mode="verify": blink liveness within 4s, then passes the live template to the async
+ *                 `verify(template)`. Its resolved value goes to onComplete; if it throws,
+ *                 the error message is shown.
+ * Every failed attempt calls onFail(error) — sign-in uses it to count attempts.
  */
-export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onComplete, onFallback, fallbackLabel }) {
+export function FaceCapture({ mode = "enroll", verify, onComplete, onFail, onFallback, fallbackLabel }) {
   const { videoRef, status } = useCamera(true);
-  const canvasRef = useRef(null);
   const [phase, setPhase] = useState("idle"); // idle | capturing | success | fail
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
@@ -194,8 +157,7 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
 
   const capture = useCallback(async () => {
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    if (!video || !canvas) return;
+    if (!video) return;
     setPhase("capturing");
     setMessage("Loading face model…");
     const report = (msg, pct) => {
@@ -206,19 +168,19 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
     const engine = await loadFaceEngine().catch(() => null);
     let r;
     try {
-      if (mode === "enroll") {
-        r = engine ? await landmarkEnroll(engine, video, report) : await pixelEnroll(video, canvas, report);
-      } else if (isLandmarkTemplate(template)) {
-        r = engine
-          ? await landmarkVerify(engine, video, template, threshold, report)
-          : { ok: false, message: "The face model couldn't load, so face verification isn't available right now. Try again or use the password fallback below." };
-      } else if (engine) {
-        // Older pixel template: re-enrol once with landmarks.
-        report("Face login was upgraded — we'll re-enrol your face once.");
-        await wait(1200);
-        r = await landmarkEnroll(engine, video, report);
-      } else {
-        r = await pixelVerify(video, canvas, template, threshold, report);
+      if (!engine) r = { ok: false, message: MSG_NO_MODEL };
+      else if (mode === "enroll") r = await landmarkEnroll(engine, video, report);
+      else {
+        const live = await landmarkLiveness(engine, video, report);
+        if (!live.ok) r = live;
+        else {
+          report("Blink detected · checking your face…");
+          try {
+            r = { ok: true, message: "Verified · blink detected", result: await verify(live.template) };
+          } catch (err) {
+            r = { ok: false, message: err.message, error: err };
+          }
+        }
       }
     } catch {
       r = { ok: false, message: "Face check failed unexpectedly. Please try again." };
@@ -227,13 +189,14 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
     if (!r.ok) {
       setPhase("fail");
       setMessage(r.message);
+      onFail?.(r.error || new Error(r.message));
       return;
     }
     setPhase("success");
     setMessage(r.message);
     await wait(900);
     onComplete(r.result);
-  }, [mode, onComplete, template, threshold, videoRef]);
+  }, [mode, onComplete, onFail, verify, videoRef]);
 
   const camOk = status === "ready";
 
@@ -241,7 +204,6 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
     <div className="facecap">
       <div className={`facecap__stage facecap__stage--${phase}`}>
         <video ref={videoRef} muted playsInline className={camOk ? "" : "is-hidden"} />
-        <canvas ref={canvasRef} hidden />
         {!camOk && (
           <div className="facecap__placeholder">
             <Icon name={status === "denied" ? "lock" : "camera"} size={28} />
@@ -251,7 +213,7 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
               {status === "unavailable" && "No camera available"}
               {status === "idle" && "Camera off"}
             </strong>
-            {(status === "denied" || status === "unavailable") && <span>Allow camera access in your browser, or use the fallback below.</span>}
+            {(status === "denied" || status === "unavailable") && <span>Allow camera access in your browser{onFallback ? ", or use the option below." : "."}</span>}
           </div>
         )}
         {camOk && <div className="facecap__oval" aria-hidden="true" />}
@@ -261,13 +223,13 @@ export function FaceCapture({ mode = "enroll", template, threshold = 0.55, onCom
       </div>
 
       <p className={`facecap__msg ${phase === "fail" ? "is-bad" : phase === "success" ? "is-good" : ""}`}>
-        {message || (mode === "enroll" ? "Centre your face in the oval with even lighting." : "Centre your face in the oval to verify it's you.")}
+        {message || (mode === "enroll" ? "Centre your face in the oval with even lighting." : "Centre your face in the oval, then blink when asked.")}
       </p>
 
       <div className="facecap__actions">
         <button type="button" className="btn btn--primary btn--block" disabled={!camOk || phase === "capturing" || phase === "success"} onClick={() => { setProgress(0); capture(); }}>
           <Icon name="scan" size={16} />
-          {phase === "fail" ? "Try again" : mode === "enroll" ? "Capture face template" : "Verify my face"}
+          {phase === "fail" ? "Try again" : mode === "enroll" ? "Set up Face ID" : "Sign in with Face ID"}
         </button>
         {onFallback && (
           <button type="button" className="btn btn--text facecap__fallback" onClick={onFallback}>

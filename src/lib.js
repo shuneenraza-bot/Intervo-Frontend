@@ -251,8 +251,8 @@ export function suitability({ job, profile, sessions, config }) {
 /* ---------- Face template ----------
  * Current templates are MediaPipe landmark geometry: { v: 2, method: "landmarks", features }
  * (see faceCues.js). Older accounts hold a plain array — a centred, downscaled,
- * z-normalised grayscale patch. The pixel functions below are kept as the
- * fallback when MediaPipe can't load, and to verify those older templates.
+ * z-normalised grayscale patch. Those can't be used for Face ID and must be
+ * re-enrolled. The pixel functions below are still used by the video-interview cues.
  */
 export const isLandmarkTemplate = (t) => t?.v === 2 && Array.isArray(t.features);
 export const isLegacyTemplate = (t) => Array.isArray(t);
@@ -273,20 +273,6 @@ export function frameToTemplate(video, canvas) {
   const mean = gray.reduce((a, b) => a + b, 0) / gray.length;
   const sd = Math.sqrt(gray.reduce((a, b) => a + (b - mean) ** 2, 0) / gray.length) || 1;
   return { vector: gray.map((g) => +((g - mean) / sd).toFixed(3)), raw: gray, brightness: mean, contrast: sd };
-}
-
-export function similarity(a, b) {
-  if (!a || !b || a.length !== b.length) return 0;
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
-  return s / a.length; // Pearson correlation of z-normalised vectors
-}
-
-export function averageTemplates(list) {
-  const n = list[0].length;
-  const out = new Array(n).fill(0);
-  list.forEach((v) => v.forEach((x, i) => (out[i] += x / list.length)));
-  return out.map((x) => +x.toFixed(3));
 }
 
 export function motionBetween(a, b) {

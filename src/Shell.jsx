@@ -76,9 +76,9 @@ export function Shell({ page, go, menuOpen, setMenuOpen, badges = {}, promo, chi
           <div className="topbar__right">
             <span className={`role-pill role-pill--${user.role}`}><Icon name={user.role === "employer" ? "building" : user.role === "admin" ? "settings" : "user"} size={13} /> {user.role}</span>
             {user.face?.template ? (
-              <span className="status-pill" title="Face verification enabled"><Icon name="shield" size={14} /> Face login on</span>
+              <span className="status-pill" title="Face ID enabled"><Icon name="shield" size={14} /> Face ID on</span>
             ) : (
-              <span className="status-pill status-pill--warn" title="Face verification not set up"><Icon name="alert" size={14} /> Face login off</span>
+              <span className="status-pill status-pill--warn" title="Face ID not set up"><Icon name="alert" size={14} /> Face ID off</span>
             )}
             <ThemeToggle />
           </div>

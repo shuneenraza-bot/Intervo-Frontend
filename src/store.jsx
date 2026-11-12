@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DB_VERSION, seedDB } from "./data";
 import { clearToken, connectStore } from "./api";
+import { navigate } from "./router";
 
 /*
  * App-wide store backed by localStorage. It plays the role of the PostgreSQL
@@ -81,6 +82,7 @@ export function StoreProvider({ children }) {
     }
     clearToken();
     setAuthId("");
+    navigate("/login", { replace: true });
   }, []);
 
   const notify = useCallback((message, tone = "good") => {

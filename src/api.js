@@ -12,7 +12,7 @@
  * Every function returns a Promise and throws ApiError with a user-facing message.
  * The endpoint contract is documented in API.md.
  */
-import { evaluateAnswer as evaluateLocal, hashPassword, suitability, uid } from "./lib";
+import { evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, suitability, uid } from "./lib";
 import { extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
 
 export const USE_BACKEND = import.meta.env.VITE_USE_BACKEND === "true";
@@ -21,9 +21,10 @@ export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000")
 const TOKEN_KEY = "intervo.token";
 
 export class ApiError extends Error {
-  constructor(message, status = 0) {
+  constructor(message, status = 0, retryAfter = null) {
     super(message);
     this.status = status;
+    this.retryAfter = retryAfter; // seconds, from a 429's Retry-After header
   }
 }
 
@@ -73,6 +74,7 @@ function errorMessage(data, status) {
   if (status === 401) return "Your session has expired. Please sign in again.";
   if (status === 403) return "You don't have permission to do that.";
   if (status === 404) return "That item could not be found.";
+  if (status === 429) return "Too many attempts. Please wait a minute and try again.";
   return "The server couldn't complete the request. Please try again.";
 }
 
@@ -99,7 +101,8 @@ async function request(method, path, body) {
       clearToken();
       store?.logout();
     }
-    throw new ApiError(errorMessage(data, res.status), res.status);
+    const retryAfter = res.status === 429 ? Number(res.headers.get("Retry-After")) || 60 : null;
+    throw new ApiError(errorMessage(data, res.status), res.status, retryAfter);
   }
   return data;
 }
@@ -118,21 +121,51 @@ function cacheUser(user) {
    Auth
    ========================================================= */
 
-/** Checks email + password for the selected role. Resolves with the user (incl. face template) for the face step. */
-export async function login({ email, password, role, remember = true }) {
+const NO_ACCOUNT = "No account found with this email.";
+const noRoleAccount = (role) => `No ${role} account found with this email.`; // never reveals the account's real role
+
+/** Local-mode account for an email + role tab, or throws the same 404s the backend sends. */
+function findAccount(email, role) {
+  const found = getDb().users.find((u) => u.email === email);
+  if (!found) throw new ApiError(NO_ACCOUNT, 404);
+  if (found.role !== role) throw new ApiError(noRoleAccount(role), 404);
+  return found;
+}
+
+/** Sign-in step 1. Resolves with { faceEnabled } so the UI knows whether to offer Face ID. */
+export async function lookupAccount({ email, role }) {
   const normalised = email.trim().toLowerCase();
+  if (USE_BACKEND) return request("POST", "/auth/lookup", { email: normalised, role });
+  return { faceEnabled: isLandmarkTemplate(findAccount(normalised, role).face?.template) };
+}
+
+/**
+ * Sign-in step 2 with ONE method: pass `password`, or `faceTemplate` (the live landmark
+ * template from a blink-verified FaceCapture). Resolves with the signed-in user.
+ */
+export async function login({ email, role, password, faceTemplate, remember = true }) {
+  const normalised = email.trim().toLowerCase();
+  const method = faceTemplate ? "face" : "password";
   if (USE_BACKEND) {
-    const { token, user } = await request("POST", "/auth/login", { email: normalised, password, role });
+    const body = faceTemplate ? { email: normalised, role, faceTemplate } : { email: normalised, role, password };
+    const { token, user } = await request("POST", "/auth/login", body);
     setToken(token, remember);
     cacheUser(user);
     return user;
   }
-  const found = getDb().users.find((u) => u.email === normalised);
-  if (!found) throw new ApiError("No account found with that email.", 404);
-  const hash = await hashPassword(found.id, password);
-  if (hash !== found.passwordHash) throw new ApiError("Incorrect password.", 401);
-  if (found.role !== role) throw new ApiError(`This account is registered as ${found.role}. Switch the tab above.`, 403);
-  return found;
+  const found = findAccount(normalised, role);
+  if (method === "password") {
+    if ((await hashPassword(found.id, password)) !== found.passwordHash) throw new ApiError("Incorrect password.", 401);
+  } else {
+    if (!isLandmarkTemplate(found.face?.template)) throw new ApiError("Face ID isn't set up for this account.", 400);
+    const { compareGeometry } = await import("./faceCues"); // already loaded by the face step
+    const threshold = getDb().config.rules.faceThreshold;
+    const sim = compareGeometry(faceTemplate.features, found.face.template.features);
+    if (sim < threshold) throw new ApiError(`Face didn't match this account (similarity ${sim.toFixed(2)}, needs ${threshold}).`, 401);
+  }
+  const lastLogin = { at: Date.now(), method };
+  write((d) => { d.users.find((u) => u.id === found.id).lastLogin = lastLogin; });
+  return { ...found, lastLogin };
 }
 
 /** Creates a candidate or employer account. `face` is the enrolment result or null. Resolves with the new user. */
@@ -158,7 +191,7 @@ export async function signup({ role, name, email, company, password, dataConsent
     id, role, name: body.name, email: body.email, company: body.company,
     passwordHash: await hashPassword(id, password), createdAt: Date.now(),
     face: face ? { template: face.template, enrolledAt: Date.now() } : null,
-    lastLogin: { at: Date.now(), method: face ? "signup+face" : "signup" },
+    lastLogin: { at: Date.now(), method: "signup" },
   };
   write((d) => {
     d.users.push(user);

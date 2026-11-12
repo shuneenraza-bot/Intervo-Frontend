@@ -5,7 +5,7 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 ## Conventions
 
 - **Base URL**: `VITE_API_URL` (default `http://localhost:8000`). Enable CORS for the frontend origin (`http://localhost:5173` in dev).
-- **Auth**: `/auth/login` and `/auth/signup` return a JWT. Every other request sends `Authorization: Bearer <token>`. Return `401` when the token is missing or expired, and the frontend signs the user out.
+- **Auth**: `/auth/login` and `/auth/signup` return a JWT (`/auth/lookup` doesn't). Every other request sends `Authorization: Bearer <token>`. Return `401` when the token is missing or expired, and the frontend signs the user out.
 - **JSON**: request and response bodies are JSON, except `POST /cv/analyze`, which takes `multipart/form-data`.
 - **Field names are camelCase** (`createdAt`, `candidateId`), as written below. In Pydantic, use `alias_generator=to_camel` with `populate_by_name=True`.
 - **IDs** are strings. **Timestamps** are Unix epoch **milliseconds** (integers).
@@ -15,6 +15,7 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 
 | Function in `api.js` | Method | Path | Who |
 |---|---|---|---|
+| `lookupAccount` | POST | `/auth/lookup` | public |
 | `login` | POST | `/auth/login` | public |
 | `signup` | POST | `/auth/signup` | public |
 | `analyzeCV` | POST | `/cv/analyze` | candidate |
@@ -32,16 +33,44 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 
 ---
 
-### POST `/auth/login`
-Checks email and password for the role tab the user picked. Face verification then runs in the browser against `user.face.template`.
+### POST `/auth/lookup`
+Sign-in step 1. Checks that an account exists for this email **and** role tab, and tells the UI whether to offer Face ID.
 
-Request:
+Request: `{ "email": "ayesha@intervo.demo", "role": "candidate" }`
+
+Response `200`: `{ "faceEnabled": true }`. `true` only when `face.template` is a current landmark template (`v: 2`). Older pixel templates count as `false`, so those users re-enrol in Profile & Privacy.
+
+Errors (`404`):
+- Email not registered: `"No account found with this email."`
+- Email registered under a different role: `"No candidate account found with this email."` (use the requested role). **Never reveal the account's real role.**
+
+### POST `/auth/login`
+Sign-in step 2. The user signs in with **one** method. Password and Face ID are alternatives, and either one is enough. The body holds either `password` or `faceTemplate`, never both.
+
+Password:
 ```json
-{ "email": "ayesha@intervo.demo", "password": "Demo@1234", "role": "candidate" }
+{ "email": "ayesha@intervo.demo", "role": "candidate", "password": "Demo@1234" }
 ```
+Face ID:
+```json
+{ "email": "ayesha@intervo.demo", "role": "candidate", "faceTemplate": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] } }
+```
+`faceTemplate` is the live landmark geometry from the browser. It is captured only after the blink liveness check passes. Compare it with the stored `face.template.features` the way `compareGeometry` in `src/faceCues.js` does: `similarity = max(0, 1 − mean(|a − b|) / 0.12)`. Accept the template when `similarity ≥ config.rules.faceThreshold`. Reference implementation: `login` in `src/api.js`.
+
+On success, set `user.lastLogin = { at: now, method: "password" | "face" }`.
+
 Response `200`: `{ "token": "<jwt>", "user": User }`
 
-Errors: `404` no account with that email · `401` wrong password · `403` account has a different role (`"This account is registered as employer. Switch the tab above."`).
+Errors:
+- `404`: same messages as `/auth/lookup`.
+- `401`: `"Incorrect password."` or `"Face didn't match this account."`
+- `400`: `"Face ID isn't set up for this account."` (a `faceTemplate` was sent but the account has no landmark template).
+- `429`: too many attempts. Send a `Retry-After` header in seconds. The UI shows a countdown.
+
+**Attempt limits.** The frontend applies these too, but the server must enforce them:
+- 5 wrong passwords for an email → block **all** sign-in for that email for 60 seconds (`429`, `Retry-After: 60`).
+- 3 failed Face ID attempts → reject `faceTemplate` logins for that email until a successful password sign-in (`429` or `401`). The frontend locks Face ID for the browser session and switches to the password tab.
+- A successful sign-in resets both counters.
 
 ### POST `/auth/signup`
 Creates a candidate or employer account. Admin accounts can't sign up. For a candidate, also create an empty profile (`skills: []`, `shareWithEmployers: false`, `consentAt: now`).
@@ -174,7 +203,7 @@ User {
   name: string; email: string; company?: string;      // company: employers only
   createdAt: number;
   face: { template: { v: 2; method: "landmarks"; features: number[] } | number[]; enrolledAt: number } | null;
-  lastLogin?: { at: number; method: string };
+  lastLogin?: { at: number; method: "password" | "face" | "signup" };
   // never return the password hash
 }
 

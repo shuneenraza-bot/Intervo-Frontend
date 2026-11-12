@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { DEMO_ACCOUNTS } from "./data";
-import { isLegacyTemplate, passwordStrength } from "./lib";
+import { firstName, passwordStrength } from "./lib";
 import * as api from "./api";
+import { navigate } from "./router";
 import { Brand, Meter, ThemeToggle } from "./ui";
 import { FaceCapture } from "./Camera";
 
@@ -13,120 +14,251 @@ const ROLE_COPY = {
   admin: { label: "Admin", icon: "settings", text: "Configure domains, roles, skills and evaluation criteria." },
 };
 
-export default function Auth() {
-  const [view, setView] = useState("signin"); // signin | signup
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/** view: "login" (#/login) | "signup" (#/signup) — chosen by the hash route in App. */
+export default function Auth({ view }) {
   const [role, setRole] = useState("candidate");
+  // Admins can't sign up, so the sign-up page (and its showcase) falls back to candidate.
+  const shownRole = view === "signup" && role === "admin" ? "candidate" : role;
 
   return (
     <div className="auth">
       <section className="auth__form-side">
         <div className="auth__top">
-          <Brand />
+          <button className="auth__home" onClick={() => navigate("/")} aria-label="Intervo home"><Brand /></button>
           <div className="auth__top-actions">
             <ThemeToggle />
-            <button className="btn btn--ghost btn--sm" onClick={() => setView(view === "signin" ? "signup" : "signin")}>
-              {view === "signin" ? <>Create account <Icon name="userPlus" size={15} /></> : <>Sign in <Icon name="arrowRight" size={15} /></>}
+            <button className="btn btn--ghost btn--sm" onClick={() => navigate(view === "login" ? "/signup" : "/login")}>
+              {view === "login" ? <>Create account <Icon name="userPlus" size={15} /></> : <>Sign in <Icon name="arrowRight" size={15} /></>}
             </button>
           </div>
         </div>
         <div className="auth__form-wrap" key={view}>
-          {view === "signin" ? (
-            <SignIn role={role} setRole={setRole} goSignup={() => setView("signup")} />
-          ) : (
-            <SignUp initialRole={role === "admin" ? "candidate" : role} goSignin={() => setView("signin")} />
-          )}
+          {view === "login" ? <SignIn role={role} setRole={setRole} /> : <SignUp role={shownRole} setRole={setRole} />}
         </div>
         <p className="auth__foot">Final Year Project · Department of Software Engineering, University of Gujrat</p>
       </section>
-      <Showcase role={role} />
+      <Showcase role={shownRole} />
     </div>
   );
 }
 
-/* ---------------- Sign in: password → face verification ---------------- */
+/* ---------------- Attempt limits & remembered method ----------------
+ * Client-side mirror of the limits the backend enforces (it answers 429 + Retry-After).
+ * Face failures are per browser session; the password block survives a reload. */
 
-function SignIn({ role, setRole, goSignup }) {
-  const { db, login, update, notify } = useStore();
+const MAX_FACE_FAILS = 3;
+const MAX_PASSWORD_FAILS = 5;
+const LOCK_SECONDS = 60;
+const METHOD_KEY = "intervo.signinMethod"; // localStorage: email → "password" | "face"
+const PASSWORD_KEY = "intervo.passwordGuard"; // localStorage: email → { fails, lockedUntil }
+const FACE_KEY = "intervo.faceFails"; // sessionStorage: email → failed face attempts
+
+function readMap(storage, key) {
+  try {
+    return JSON.parse(window[storage].getItem(key)) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeEntry(storage, key, email, value) {
+  try {
+    const map = readMap(storage, key);
+    if (value == null) delete map[email];
+    else map[email] = value;
+    window[storage].setItem(key, JSON.stringify(map));
+  } catch {
+    /* storage blocked — limits then only last for this page */
+  }
+}
+
+/* ---------------- Sign in: email → one method (password or Face ID) ---------------- */
+
+function SignIn({ role, setRole }) {
+  const { login, notify } = useStore();
+  const [account, setAccount] = useState(null); // { email, faceEnabled } once step 1 passes
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [method, setMethod] = useState("password");
   const [show, setShow] = useState(false);
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
+  const [noAccount, setNoAccount] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [pending, setPending] = useState(null); // user waiting for face step
+  const [faceFails, setFaceFails] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState(0);
+  const [now, setNow] = useState(Date.now);
 
-  async function submit(e) {
+  const locked = lockedUntil > now;
+  const faceLocked = faceFails >= MAX_FACE_FAILS;
+  const faceAvailable = !!account?.faceEnabled && !faceLocked;
+
+  // Countdown while sign-in is blocked.
+  useEffect(() => {
+    if (!locked) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [locked]);
+
+  function showError(message, isNoAccount = false) {
+    setError(message);
+    setNoAccount(isNoAccount);
+  }
+
+  function lockFor(seconds) {
+    const until = Date.now() + seconds * 1000;
+    writeEntry("localStorage", PASSWORD_KEY, account.email, { fails: 0, lockedUntil: until });
+    setLockedUntil(until);
+    setNow(Date.now());
+    showError("");
+  }
+
+  async function findAccount(e) {
     e.preventDefault();
-    setError("");
+    showError("");
+    const addr = email.trim().toLowerCase();
+    if (!EMAIL_RE.test(addr)) return showError("Enter a valid email address.");
     setLoading(true);
     try {
-      setPending(await api.login({ email, password, role, remember }));
+      const { faceEnabled } = await api.lookupAccount({ email: addr, role });
+      const fails = readMap("sessionStorage", FACE_KEY)[addr] || 0;
+      const last = readMap("localStorage", METHOD_KEY)[addr];
+      setAccount({ email: addr, faceEnabled });
+      setFaceFails(fails);
+      setLockedUntil(readMap("localStorage", PASSWORD_KEY)[addr]?.lockedUntil || 0);
+      setNow(Date.now());
+      setMethod(last === "face" && faceEnabled && fails < MAX_FACE_FAILS ? "face" : "password");
     } catch (err) {
-      setError(err.message);
+      showError(err.message, err.status === 404);
     } finally {
       setLoading(false);
     }
   }
 
-  function finish(method) {
-    update((d) => {
-      const u = d.users.find((x) => x.id === pending.id);
-      u.lastLogin = { at: Date.now(), method };
-    });
-    login(pending.id, remember);
-    notify(`Welcome back, ${pending.name.split(" ")[0]}`);
+  function finish(user, via) {
+    writeEntry("localStorage", METHOD_KEY, account.email, via);
+    writeEntry("localStorage", PASSWORD_KEY, account.email, null);
+    writeEntry("sessionStorage", FACE_KEY, account.email, null);
+    login(user.id, remember);
+    notify(`Welcome back, ${firstName(user.name)}`);
   }
 
-  if (pending) {
-    const enrolled = !!pending.face?.template;
-    const upgrade = isLegacyTemplate(pending.face?.template);
+  async function signInWithPassword(e) {
+    e.preventDefault();
+    if (locked) return;
+    if (!password) return showError("Enter your password.");
+    showError("");
+    setLoading(true);
+    try {
+      finish(await api.login({ email: account.email, role, password, remember }), "password");
+    } catch (err) {
+      setLoading(false);
+      if (err.status === 429) return lockFor(err.retryAfter || LOCK_SECONDS);
+      if (err.status !== 401) return showError(err.message);
+      const fails = (readMap("localStorage", PASSWORD_KEY)[account.email]?.fails || 0) + 1;
+      if (fails >= MAX_PASSWORD_FAILS) return lockFor(LOCK_SECONDS);
+      writeEntry("localStorage", PASSWORD_KEY, account.email, { fails, lockedUntil: 0 });
+      const left = MAX_PASSWORD_FAILS - fails;
+      showError(`Incorrect password. ${left} ${left === 1 ? "attempt" : "attempts"} left before sign-in is paused for ${LOCK_SECONDS} seconds.`);
+    }
+  }
+
+  function onFaceFail(err) {
+    if (err.status === 429) return lockFor(err.retryAfter || LOCK_SECONDS);
+    const fails = faceFails + 1;
+    writeEntry("sessionStorage", FACE_KEY, account.email, fails);
+    setFaceFails(fails);
+    if (fails >= MAX_FACE_FAILS) setMethod("password");
+  }
+
+  /* ---- Step 2: choose a method ---- */
+  if (account) {
+    const secondsLeft = Math.ceil((lockedUntil - now) / 1000);
     return (
       <>
-        <button className="btn btn--text auth__back" onClick={() => setPending(null)}><Icon name="arrowLeft" size={15} /> Back</button>
-        <p className="kicker">Step 2 of 2 · Face verification</p>
-        <h1>{enrolled ? "Confirm it's you" : "Set up face login"}</h1>
+        <button className="btn btn--text auth__back" onClick={() => { setAccount(null); showError(""); }}><Icon name="arrowLeft" size={15} /> Back</button>
+        <p className="kicker">Step 2 of 2 · Sign in</p>
+        <h1>Welcome back</h1>
         <p className="auth__lead">
-          {upgrade
-            ? "Your password is correct. Face login has been upgraded, so we need to re-enrol your face once."
-            : enrolled
-              ? "Your password is correct. A quick webcam check — including a blink — completes sign-in."
-              : "This account has no face template yet. Enrol now to protect future sign-ins."}
+          Signing in to the {ROLE_COPY[role].label.toLowerCase()} account <b>{account.email}</b>. Use your password or Face ID — either one is enough.
         </p>
-        <FaceCapture
-          mode={enrolled ? "verify" : "enroll"}
-          template={pending.face?.template}
-          threshold={db.config.rules.faceThreshold}
-          onComplete={(res) => {
-            // A template comes back on first enrolment and when an older template is re-enrolled.
-            if (res.template) {
-              update((d) => {
-                d.users.find((x) => x.id === pending.id).face = { template: res.template, enrolledAt: Date.now() };
-              });
-            }
-            finish(!enrolled ? "password+enrolled" : res.template ? "password+reenrolled" : "password+face");
-          }}
-          onFallback={() => finish("password-fallback")}
-          fallbackLabel={enrolled ? "Camera not working? Use password-only fallback" : "Skip for now"}
-        />
+
+        <div className="role-tabs role-tabs--two" role="tablist" aria-label="Sign-in method">
+          <button role="tab" aria-selected={method === "password"} className={method === "password" ? "is-active" : ""} onClick={() => { setMethod("password"); showError(""); }}>
+            <Icon name="lock" size={16} /> Password
+          </button>
+          <button role="tab" aria-selected={method === "face"} className={method === "face" ? "is-active" : ""} disabled={!faceAvailable} onClick={() => { setMethod("face"); showError(""); }}>
+            <Icon name="scan" size={16} /> Face ID
+          </button>
+        </div>
+
+        {!account.faceEnabled && (
+          <p className="auth__hint"><Icon name="info" size={14} /> Face ID isn't set up for this account. You can add it later in Profile & Privacy.</p>
+        )}
+        {account.faceEnabled && faceLocked && (
+          <p className="auth__hint"><Icon name="lock" size={14} /> Face ID is locked after {MAX_FACE_FAILS} failed attempts. Sign in with your password.</p>
+        )}
+
+        {locked ? (
+          <p className="form__error" role="alert"><Icon name="lock" size={15} /> Too many failed attempts. Sign-in is paused — try again in {secondsLeft}s.</p>
+        ) : method === "face" ? (
+          <FaceCapture
+            mode="verify"
+            verify={(faceTemplate) => api.login({ email: account.email, role, faceTemplate, remember })}
+            onComplete={(user) => finish(user, "face")}
+            onFail={onFaceFail}
+            onFallback={() => setMethod("password")}
+            fallbackLabel={`Use password instead${faceFails ? ` · ${MAX_FACE_FAILS - faceFails} Face ID ${MAX_FACE_FAILS - faceFails === 1 ? "attempt" : "attempts"} left` : ""}`}
+          />
+        ) : (
+          <form className="form" onSubmit={signInWithPassword} noValidate>
+            <div className="field">
+              <div className="field__row">
+                <label htmlFor="password">Password</label>
+                <button type="button" className="link" onClick={() => showError("Password reset emails are sent by the backend — not available in the prototype.")}>Forgot password?</button>
+              </div>
+              <div className="input">
+                <Icon name="lock" size={17} />
+                <input id="password" type={show ? "text" : "password"} autoComplete="current-password" placeholder="Your password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
+                <button type="button" className="input__action" onClick={() => setShow((v) => !v)} aria-label={show ? "Hide password" : "Show password"}>
+                  <Icon name={show ? "eyeOff" : "eye"} size={17} />
+                </button>
+              </div>
+            </div>
+            {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
+            <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading}>
+              {loading ? <span className="spinner" /> : <>Sign in <Icon name="arrowRight" size={16} /></>}
+            </button>
+          </form>
+        )}
+
+        <label className="check auth__remember">
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          <span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>
+          Keep me signed in on this device
+        </label>
       </>
     );
   }
 
+  /* ---- Step 1: role + email ---- */
   return (
     <>
       <p className="kicker">Step 1 of 2 · Account</p>
       <h1>Welcome back</h1>
-      <p className="auth__lead">Sign in to continue. You'll confirm your identity with a quick face check next.</p>
+      <p className="auth__lead">Choose your role and enter your email. Next, sign in with your password or Face ID.</p>
 
       <div className="role-tabs" role="tablist">
         {Object.entries(ROLE_COPY).map(([key, r]) => (
-          <button key={key} role="tab" aria-selected={role === key} className={role === key ? "is-active" : ""} onClick={() => { setRole(key); setError(""); }}>
+          <button key={key} role="tab" aria-selected={role === key} className={role === key ? "is-active" : ""} onClick={() => { setRole(key); showError(""); }}>
             <Icon name={r.icon} size={16} /> {r.label}
           </button>
         ))}
       </div>
 
-      <form className="form" onSubmit={submit} noValidate>
+      <form className="form" onSubmit={findAccount} noValidate>
         <div className="field">
           <label htmlFor="email">Email</label>
           <div className="input">
@@ -134,32 +266,19 @@ function SignIn({ role, setRole, goSignup }) {
             <input id="email" type="email" autoComplete="email" placeholder={role === "employer" ? "hr@company.com" : "you@uog.edu.pk"} value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
         </div>
-        <div className="field">
-          <div className="field__row">
-            <label htmlFor="password">Password</label>
-            <button type="button" className="link" onClick={() => setError("Password reset emails are sent by the backend — not available in the prototype.")}>Forgot password?</button>
-          </div>
-          <div className="input">
-            <Icon name="lock" size={17} />
-            <input id="password" type={show ? "text" : "password"} autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} />
-            <button type="button" className="input__action" onClick={() => setShow((v) => !v)} aria-label={show ? "Hide password" : "Show password"}>
-              <Icon name={show ? "eyeOff" : "eye"} size={17} />
-            </button>
-          </div>
-        </div>
-        <label className="check">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-          <span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>
-          Keep me signed in on this device
-        </label>
-        {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
-        <button className={`btn btn--primary btn--block btn--lg`} type="submit" disabled={loading}>
+        {error && (
+          <p className="form__error" role="alert">
+            <Icon name="alert" size={15} /> {error}
+            {noAccount && role !== "admin" && <> <button type="button" className="link" onClick={() => navigate("/signup")}>Create an account</button></>}
+          </p>
+        )}
+        <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading}>
           {loading ? <span className="spinner" /> : <>Continue <Icon name="arrowRight" size={16} /></>}
         </button>
       </form>
 
       {role !== "admin" ? (
-        <p className="auth__switch">New to Intervo? <button className="link" onClick={goSignup}>Create {role === "employer" ? "an employer" : "a candidate"} account</button></p>
+        <p className="auth__switch">New to Intervo? <button className="link" onClick={() => navigate("/signup")}>Create an account</button></p>
       ) : (
         <p className="auth__switch">Admin accounts are created by the system owner.</p>
       )}
@@ -167,7 +286,7 @@ function SignIn({ role, setRole, goSignup }) {
       <div className="demo-box">
         <span className="demo-box__title"><Icon name="sparkle" size={14} /> Demo account</span>
         {DEMO_ACCOUNTS.filter((a) => a.role === role).map((a) => (
-          <button key={a.email} className="demo-box__row" onClick={() => { setEmail(a.email); setPassword(a.password); setError(""); }}>
+          <button key={a.email} className="demo-box__row" onClick={() => { setEmail(a.email); setPassword(a.password); showError(""); }}>
             <span><b>{a.email}</b> · {a.password}</span>
             <span className="link">Fill in</span>
           </button>
@@ -177,12 +296,11 @@ function SignIn({ role, setRole, goSignup }) {
   );
 }
 
-/* ---------------- Sign up: role → details → face enrolment ---------------- */
+/* ---------------- Sign up: role → details → Face ID (optional) ---------------- */
 
-function SignUp({ initialRole, goSignin }) {
+function SignUp({ role, setRole }) {
   const { db, login, notify } = useStore();
   const [step, setStep] = useState(1);
-  const [role, setRole] = useState(initialRole);
   const [form, setForm] = useState({ name: "", email: "", company: "", password: "", confirm: "", terms: false, dataConsent: false });
   const [error, setError] = useState("");
   const [show, setShow] = useState(false);
@@ -193,7 +311,7 @@ function SignUp({ initialRole, goSignin }) {
     e.preventDefault();
     const email = form.email.trim().toLowerCase();
     if (form.name.trim().length < 3) return setError("Enter your full name.");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return setError("Enter a valid email address.");
+    if (!EMAIL_RE.test(email)) return setError("Enter a valid email address.");
     if (db.users.some((u) => u.email === email)) return setError("An account with this email already exists.");
     if (role === "employer" && form.company.trim().length < 2) return setError("Enter your company name.");
     if (strength.score < 3) return setError("Use at least 8 characters with upper and lower case letters and a number.");
@@ -208,7 +326,7 @@ function SignUp({ initialRole, goSignin }) {
     try {
       const created = await api.signup({ role, name: form.name, email: form.email, company: form.company, password: form.password, dataConsent: form.dataConsent, face });
       login(created.id, true);
-      notify("Account created — welcome to Intervo");
+      notify(face ? "Account created with Face ID — welcome to Intervo" : "Account created — welcome to Intervo");
     } catch (err) {
       setError(err.message);
       setStep(2);
@@ -218,7 +336,7 @@ function SignUp({ initialRole, goSignin }) {
   return (
     <>
       <div className="stepper" aria-label="Sign-up progress">
-        {["Role", "Details", "Face"].map((s, i) => (
+        {["Role", "Details", "Face ID"].map((s, i) => (
           <div key={s} className={`stepper__item ${step === i + 1 ? "is-current" : ""} ${step > i + 1 ? "is-done" : ""}`}>
             <span>{step > i + 1 ? <Icon name="check" size={12} strokeWidth={2.8} /> : i + 1}</span> {s}
           </div>
@@ -240,7 +358,6 @@ function SignUp({ initialRole, goSignin }) {
             ))}
           </div>
           <button className="btn btn--primary btn--block btn--lg" onClick={() => setStep(2)}>Continue <Icon name="arrowRight" size={16} /></button>
-          <p className="auth__switch">Already registered? <button className="link" onClick={goSignin}>Sign in</button></p>
         </>
       )}
 
@@ -299,7 +416,7 @@ function SignUp({ initialRole, goSignin }) {
               </label>
             )}
             {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
-            <button className="btn btn--primary btn--block btn--lg" type="submit">Continue to face setup <Icon name="arrowRight" size={16} /></button>
+            <button className="btn btn--primary btn--block btn--lg" type="submit">Continue <Icon name="arrowRight" size={16} /></button>
           </form>
         </>
       )}
@@ -307,11 +424,13 @@ function SignUp({ initialRole, goSignin }) {
       {step === 3 && (
         <>
           <button className="btn btn--text auth__back" onClick={() => setStep(2)}><Icon name="arrowLeft" size={15} /> Back</button>
-          <h1>Enrol your face</h1>
-          <p className="auth__lead">Face verification adds a second step to every sign-in. We store a numeric template, not your photo, and you can delete it any time.</p>
-          <FaceCapture mode="enroll" onComplete={createAccount} onFallback={() => createAccount(null)} fallbackLabel="Skip — use password only for now" />
+          <h1>Set up Face ID</h1>
+          <p className="auth__lead">Sign in with a glance and a blink instead of typing your password. We store landmark measurements, not your photo. You can also set this up later in Profile & Privacy.</p>
+          <FaceCapture mode="enroll" onComplete={createAccount} onFallback={() => createAccount(null)} fallbackLabel="Skip for now" />
         </>
       )}
+
+      <p className="auth__switch">Already have an account? <button className="link" onClick={() => navigate("/login")}>Sign in</button></p>
     </>
   );
 }
@@ -320,7 +439,7 @@ function SignUp({ initialRole, goSignin }) {
 
 const today = new Date().toLocaleDateString(undefined, { day: "numeric", month: "short" });
 
-const SHOWCASE = {
+export const SHOWCASE = {
   candidate: {
     pill: "Adaptive interview coaching",
     title: ["Practise smarter.", "Improve with every session."],
@@ -370,6 +489,34 @@ const SHOWCASE = {
   },
 };
 
+/** Session-report / candidate-fit card from the showcase; the landing page reuses it. */
+export function ProductPreview({ s, className = "" }) {
+  return (
+    <div className={`preview ${className}`}>
+      <div className="preview__head">
+        <strong>{s.card}</strong>
+        <span className="preview__chip">{s.chip}</span>
+      </div>
+      <div className="preview__body">
+        <div className="preview__score">
+          <PreviewRing {...s.ring} />
+          {s.delta && <span className="preview__delta"><Icon name={s.delta.icon} size={13} /> {s.delta.text}</span>}
+        </div>
+        <div className="preview__rows">
+          {s.rows.map((row) => (
+            <div className="preview__row" key={row.name}>
+              <span className="preview__name">{row.name}{row.focus && <em className="preview__tag">Needs focus</em>}</span>
+              <Meter value={row.value} tone={row.tone} />
+              <b>{row.display ?? row.value}</b>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="preview__foot"><Icon name="target" size={15} /> <span>{s.foot}</span></div>
+    </div>
+  );
+}
+
 function PreviewRing({ value, display = value, label, size = 96, stroke = 8 }) {
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
@@ -397,28 +544,7 @@ function Showcase({ role }) {
         <h2>{s.title[0]}<br />{s.title[1]}</h2>
         <p className="showcase__text">{s.text}</p>
 
-        <div className="preview">
-          <div className="preview__head">
-            <strong>{s.card}</strong>
-            <span className="preview__chip">{s.chip}</span>
-          </div>
-          <div className="preview__body">
-            <div className="preview__score">
-              <PreviewRing {...s.ring} />
-              {s.delta && <span className="preview__delta"><Icon name={s.delta.icon} size={13} /> {s.delta.text}</span>}
-            </div>
-            <div className="preview__rows">
-              {s.rows.map((row) => (
-                <div className="preview__row" key={row.name}>
-                  <span className="preview__name">{row.name}{row.focus && <em className="preview__tag">Needs focus</em>}</span>
-                  <Meter value={row.value} tone={row.tone} />
-                  <b>{row.display ?? row.value}</b>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="preview__foot"><Icon name="target" size={15} /> <span>{s.foot}</span></div>
-        </div>
+        <ProductPreview s={s} />
 
         <ul className="showcase__features">
           {s.features.map(([icon, label]) => (
@@ -427,7 +553,7 @@ function Showcase({ role }) {
         </ul>
       </div>
       <p className="showcase__foot">
-        <Icon name="shield" size={14} /> Face-verified sign-in <i /> Consent-first data sharing
+        <Icon name="shield" size={14} /> Password or Face ID sign-in <i /> Consent-first data sharing
       </p>
     </aside>
   );
