@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { formatDate, initials, isLegacyTemplate } from "./lib";
+import * as api from "./api";
 import { Card, Modal, PageHeader, Switch } from "./ui";
 import { FaceCapture } from "./Camera";
 
@@ -101,7 +102,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
             <div className="btn-row">
               <button className="btn btn--primary btn--sm" onClick={() => setEnrolOpen(true)}><Icon name="scan" size={15} /> {user.face?.template ? "Re-enrol face" : "Set up Face ID"}</button>
               {user.face?.template && (
-                <button className="btn btn--ghost btn--sm" onClick={() => { update((d) => { d.users.find((u) => u.id === user.id).face = null; }); notify("Face template deleted"); }}>
+                <button className="btn btn--ghost btn--sm" onClick={() => api.deleteFace(user.id).then(() => notify("Face template deleted"), (e) => notify(e.message, "bad"))}>
                   Delete template
                 </button>
               )}
@@ -130,9 +131,8 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
           <FaceCapture
             mode="enroll"
             onComplete={({ template }) => {
-              update((d) => { d.users.find((u) => u.id === user.id).face = { template, enrolledAt: Date.now() }; });
               setEnrolOpen(false);
-              notify("Face ID enabled");
+              api.enrolFace(user.id, template).then(() => notify("Face ID enabled"), (e) => notify(e.message, "bad"));
             }}
           />
         )}

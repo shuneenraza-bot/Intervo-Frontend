@@ -68,10 +68,10 @@ export default function CVPage({ user, db, profile, go }) {
   // Live JD preview: parsed in the same render locally; debounced server request in backend mode.
   // skillConfig is read inside parseJDSync, so it stays a dependency (re-parse when the admin edits skills).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const localJD = useMemo(() => (!api.USE_BACKEND && jd.trim().length > 30 ? api.parseJDSync(jd, role.skills) : null), [jd, skillConfig, role]);
+  const localJD = useMemo(() => (!api.uses("cv") && jd.trim().length > 30 ? api.parseJDSync(jd, role.skills) : null), [jd, skillConfig, role]);
   const [remoteJD, setRemoteJD] = useState(null);
   useEffect(() => {
-    if (!api.USE_BACKEND) return;
+    if (!api.uses("cv")) return;
     let live = true;
     const t = setTimeout(() => {
       if (jd.trim().length <= 30) return setRemoteJD(null);
@@ -79,7 +79,7 @@ export default function CVPage({ user, db, profile, go }) {
     }, 400);
     return () => { live = false; clearTimeout(t); };
   }, [jd, role]);
-  const jdParsed = api.USE_BACKEND ? remoteJD : localJD;
+  const jdParsed = api.uses("cv") ? remoteJD : localJD;
   const result = profile.result;
 
   /* ---------- Persist ---------- */

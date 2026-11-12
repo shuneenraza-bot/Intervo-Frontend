@@ -1,10 +1,10 @@
 # Intervo REST API
 
-The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) when `VITE_USE_BACKEND=true`. Until then the same functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
+The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) for each module listed in `VITE_BACKEND_MODULES` (`auth`, `employer`; see the README). The other functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
 
 ## Conventions
 
-- **Base URL**: `VITE_API_URL` (default `http://localhost:8000`). Enable CORS for the frontend origin (`http://localhost:5173` in dev).
+- **Base URL**: `VITE_API_URL` (default `http://localhost:8000/api`). Paths below are relative to it. Enable CORS for the frontend origin (`http://localhost:5173` in dev).
 - **Auth**: `/auth/login` and `/auth/signup` return a JWT (`/auth/lookup` doesn't). Every other request sends `Authorization: Bearer <token>`. Return `401` when the token is missing or expired, and the frontend signs the user out.
 - **JSON**: request and response bodies are JSON, except `POST /cv/analyze`, which takes `multipart/form-data`.
 - **Field names are camelCase** (`createdAt`, `candidateId`), as written below. In Pydantic, use `alias_generator=to_camel` with `populate_by_name=True`.
@@ -18,6 +18,10 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `lookupAccount` | POST | `/auth/lookup` | public |
 | `login` | POST | `/auth/login` | public |
 | `signup` | POST | `/auth/signup` | public |
+| `restoreSession` | GET | `/auth/me` | signed in |
+| `enrolFace` | PUT | `/auth/face` | signed in |
+| `deleteFace` | DELETE | `/auth/face` | signed in |
+| `getConfig` | GET | `/config` | signed in |
 | `analyzeCV` | POST | `/cv/analyze` | candidate |
 | `parseJD` | POST | `/jd/parse` | candidate |
 | `evaluateAnswer` | POST | `/interview/evaluate` | candidate |
@@ -28,6 +32,7 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `saveJob` (edit) | PUT | `/jobs/{jobId}` | employer (owner) |
 | `applyToJob` | POST | `/jobs/{jobId}/apply` | candidate |
 | `withdrawApplication` | DELETE | `/jobs/{jobId}/apply` | candidate |
+| `setJobStatus` | PATCH | `/jobs/{jobId}/status` | employer (owner) |
 | `getCandidates` | GET | `/jobs/{jobId}/candidates` | employer (owner) |
 | `setApplicationStatus` | PATCH | `/applications/{applicationId}` | employer (owner) |
 
@@ -90,6 +95,12 @@ Request:
 Response `201`: `{ "token": "<jwt>", "user": User }`
 
 Errors: `409` email already registered · `422` invalid input.
+
+### GET `/auth/me` · PUT `/auth/face` · DELETE `/auth/face`
+All three return the signed-in `User`. `GET /auth/me` is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and enrols or replaces Face ID; `DELETE` removes it.
+
+### GET `/config`
+The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates, the skill library and the suitability weights.
 
 ### POST `/cv/analyze`
 Extracts text from a CV and parses it into sections. **Also saves the result on the caller's profile** (`cv` and `skills`), because employers' suitability scores read it.
@@ -156,7 +167,7 @@ Response `200`:
 - `applications`: the ones the caller may see. A **candidate** gets their own. An **employer** gets all applications on their own jobs (used for applicant counts).
 
 ### POST `/jobs` · PUT `/jobs/{jobId}`
-Create or update a posting. On create, the server sets `id`, `employerId`, `company` (from the employer's account) and `createdAt`. On update, only the owner may edit. The body is the whole `Job`. Closing or reopening a job is a PUT with `status` changed.
+Create or update a posting. On create, the server sets `id`, `employerId`, `company` (from the employer's account) and `createdAt`. On update, only the owner may edit. The body is the whole `Job`. Closing or reopening a job is `PATCH /jobs/{jobId}/status` with `{ "status": "open" | "closed" }`, which returns the stored `Job`.
 
 Response `201` / `200`: the stored `Job`.
 
@@ -276,9 +287,9 @@ Suitability {
 
 ## Not covered yet
 
-These still run only in the browser, in both modes. Add endpoints when the backend is ready for them:
+These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (`/cv/*`, `/jd/parse`, `/interview/evaluate` and `/sessions` above are also not built yet):
 
 - Admin configuration: domains, roles, skills, questions, criteria, rules (`AdminApp.jsx`). The local evaluator and parsers read these.
-- Profile edits: name, sharing toggle, per-application consent, saved jobs, face template enrol/delete, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
+- Profile edits: name, sharing toggle, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
 - Recording `lastLogin` after face verification (`Auth.jsx`).
 - Fetching a user's profile from the server. The candidate's own profile currently comes from the local cache, filled by `analyzeCV`.

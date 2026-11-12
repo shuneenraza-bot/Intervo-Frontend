@@ -1,13 +1,19 @@
 /*
  * API service layer. Pages call api.* for every data operation; this file
- * decides where the work happens:
+ * decides, per module, where the work happens:
  *
- *   USE_BACKEND = false (default) → the prototype logic in lib.js / cvParser.js
- *                                   runs in the browser against the localStorage store.
- *   USE_BACKEND = true            → REST calls to the FastAPI backend at API_URL with a
- *                                   JWT bearer token. Responses are written back into the
- *                                   store, which then acts as a client-side cache, so the
- *                                   pages render exactly the same way in both modes.
+ *   VITE_BACKEND_MODULES = ""              → everything runs in the browser against the
+ *                                            localStorage store (lib.js / cvParser.js).
+ *   VITE_BACKEND_MODULES = "auth,employer" → the listed modules call the FastAPI backend at
+ *                                            API_URL with a JWT bearer token; the rest stay local.
+ *
+ *   auth      lookup, signup, login (password or face), face enrol/delete, me
+ *   employer  config, jobs, apply/withdraw, application status, candidate ranking
+ *   cv        CV analysis and JD parsing        (no backend endpoints yet)
+ *   interview answer evaluation and sessions    (no backend endpoints yet)
+ *
+ * Backend responses are written back into the store, which then acts as a client-side
+ * cache, so the pages render the same way whichever side did the work.
  *
  * Every function returns a Promise and throws ApiError with a user-facing message.
  * The endpoint contract is documented in API.md.
@@ -15,8 +21,16 @@
 import { evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, suitability, uid } from "./lib";
 import { extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
 
-export const USE_BACKEND = import.meta.env.VITE_USE_BACKEND === "true";
-export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000").replace(/\/+$/, "");
+const MODULES = new Set(
+  (import.meta.env.VITE_BACKEND_MODULES || "").split(",").map((m) => m.trim().toLowerCase()).filter(Boolean)
+);
+/** True when `module` ("auth" | "employer" | "cv" | "interview") is served by the backend. */
+export const uses = (module) => MODULES.has(module);
+export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/+$/, "");
+
+if (uses("employer") && !uses("auth")) {
+  console.warn("VITE_BACKEND_MODULES: the employer module needs the auth module too (its requests need a JWT).");
+}
 
 const TOKEN_KEY = "intervo.token";
 
@@ -29,8 +43,8 @@ export class ApiError extends Error {
 }
 
 /* ---------- Store binding ----------
- * StoreProvider calls connectStore({ db, update, logout }) on every render so
- * local mode reads the latest db and both modes can write to it. */
+ * StoreProvider calls connectStore({ db, update, user, logout, notify }) on every render so
+ * local code reads the latest db and backend code can cache into it. */
 let store = null;
 export function connectStore(s) {
   store = s;
@@ -78,6 +92,9 @@ function errorMessage(data, status) {
   return "The server couldn't complete the request. Please try again.";
 }
 
+const OFFLINE = "Can't reach the server — is the backend running?";
+const PUBLIC_PATHS = ["/auth/lookup", "/auth/login", "/auth/signup"]; // a 401 here is a wrong password, not an expired session
+
 async function request(method, path, body) {
   const headers = { Accept: "application/json" };
   const token = getToken();
@@ -93,13 +110,15 @@ async function request(method, path, body) {
   try {
     res = await fetch(`${API_URL}${path}`, { method, headers, body: payload });
   } catch {
-    throw new ApiError("Can't reach the Intervo server. Check your connection and try again.");
+    throw new ApiError(OFFLINE);
   }
   const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
-    if (res.status === 401 && token && !path.startsWith("/auth/")) {
-      clearToken();
-      store?.logout();
+    if (res.status === 401 && !PUBLIC_PATHS.includes(path)) {
+      // Missing or expired token: sign out so the user can sign in again.
+      const wasSignedIn = !!store?.user;
+      store?.logout(); // also clears the token
+      if (wasSignedIn) store?.notify("Your session has expired. Please sign in again.", "bad");
     }
     const retryAfter = res.status === 429 ? Number(res.headers.get("Retry-After")) || 60 : null;
     throw new ApiError(errorMessage(data, res.status), res.status, retryAfter);
@@ -113,8 +132,15 @@ function upsert(list, item, key = "id") {
   if (i >= 0) list[i] = { ...list[i], ...item };
   else list.push(item);
 }
+/**
+ * Copies a backend user into the local store under the same id, so the pages that still
+ * read the store (the whole candidate side) work for an account that lives on the server.
+ */
 function cacheUser(user) {
-  write((d) => upsert(d.users, user));
+  write((d) => {
+    upsert(d.users, user);
+    if (user.role === "candidate") d.profiles[user.id] ??= { skills: [], shareWithEmployers: false, consentAt: Date.now() };
+  });
 }
 
 /* =========================================================
@@ -135,7 +161,7 @@ function findAccount(email, role) {
 /** Sign-in step 1. Resolves with { faceEnabled } so the UI knows whether to offer Face ID. */
 export async function lookupAccount({ email, role }) {
   const normalised = email.trim().toLowerCase();
-  if (USE_BACKEND) return request("POST", "/auth/lookup", { email: normalised, role });
+  if (uses("auth")) return request("POST", "/auth/lookup", { email: normalised, role });
   return { faceEnabled: isLandmarkTemplate(findAccount(normalised, role).face?.template) };
 }
 
@@ -146,7 +172,7 @@ export async function lookupAccount({ email, role }) {
 export async function login({ email, role, password, faceTemplate, remember = true }) {
   const normalised = email.trim().toLowerCase();
   const method = faceTemplate ? "face" : "password";
-  if (USE_BACKEND) {
+  if (uses("auth")) {
     const body = faceTemplate ? { email: normalised, role, faceTemplate } : { email: normalised, role, password };
     const { token, user } = await request("POST", "/auth/login", body);
     setToken(token, remember);
@@ -176,13 +202,10 @@ export async function signup({ role, name, email, company, password, dataConsent
     password, dataConsent,
     face: face ? { template: face.template } : null,
   };
-  if (USE_BACKEND) {
+  if (uses("auth")) {
     const { token, user } = await request("POST", "/auth/signup", body);
     setToken(token, true);
-    write((d) => {
-      upsert(d.users, user);
-      if (role === "candidate") d.profiles[user.id] ??= { skills: [], shareWithEmployers: false, consentAt: Date.now() };
-    });
+    cacheUser(user);
     return user;
   }
   if (getDb().users.some((u) => u.email === body.email)) throw new ApiError("An account with this email already exists.", 409);
@@ -200,6 +223,33 @@ export async function signup({ role, name, email, company, password, dataConsent
   return user;
 }
 
+/**
+ * Checks a remembered sign-in against the backend on page load and refreshes the cached
+ * user. A missing or expired token signs the user out; an offline server leaves them be.
+ */
+export async function restoreSession() {
+  if (!uses("auth")) return null;
+  if (!getToken()) {
+    store.logout();
+    return null;
+  }
+  const user = await request("GET", "/auth/me");
+  cacheUser(user);
+  return user;
+}
+
+/** Enrols or replaces the user's Face ID template. */
+export async function enrolFace(userId, template) {
+  if (uses("auth")) return cacheUser(await request("PUT", "/auth/face", { template }));
+  write((d) => { d.users.find((u) => u.id === userId).face = { template, enrolledAt: Date.now() }; });
+}
+
+/** Deletes the user's Face ID template. */
+export async function deleteFace(userId) {
+  if (uses("auth")) return cacheUser(await request("DELETE", "/auth/face"));
+  write((d) => { d.users.find((u) => u.id === userId).face = null; });
+}
+
 /* =========================================================
    CV & job description
    ========================================================= */
@@ -214,7 +264,7 @@ export async function analyzeCV({ file, text }, onStep = () => {}) {
     ? { fileName: file.name, fileType: file.name.split(".").pop().toUpperCase(), fileSize: file.size }
     : { fileName: "", fileType: "TEXT" };
 
-  if (USE_BACKEND) {
+  if (uses("cv")) {
     const form = new FormData();
     if (file) form.append("file", file);
     else form.append("text", text);
@@ -233,13 +283,13 @@ export async function analyzeCV({ file, text }, onStep = () => {}) {
 
 /** Extracts title, weighted skills, years and education from a job description. */
 export async function parseJD(text, roleSkills = []) {
-  if (USE_BACKEND) return request("POST", "/jd/parse", { text, roleSkills });
+  if (uses("cv")) return request("POST", "/jd/parse", { text, roleSkills });
   return parseJDSync(text, roleSkills);
 }
 
-/** Local-mode parseJD without the Promise, so live previews render in the same frame. Null in backend mode. */
+/** Local parseJD without the Promise, so live previews render in the same frame. Null when the backend parses. */
 export function parseJDSync(text, roleSkills = []) {
-  return USE_BACKEND ? null : parseJDLocal(text, getDb().config.skills, roleSkills);
+  return uses("cv") ? null : parseJDLocal(text, getDb().config.skills, roleSkills);
 }
 
 /* =========================================================
@@ -248,13 +298,13 @@ export function parseJDSync(text, roleSkills = []) {
 
 /** Scores one answer against the admin-configured rubric. */
 export async function evaluateAnswer(answer, question) {
-  if (USE_BACKEND) return request("POST", "/interview/evaluate", { answer, question });
+  if (uses("interview")) return request("POST", "/interview/evaluate", { answer, question });
   return evaluateLocal(answer, question, getDb().config);
 }
 
 /** A candidate's sessions, newest first. In backend mode this also refreshes the cache. */
 export async function getSessions(userId) {
-  if (USE_BACKEND) {
+  if (uses("interview")) {
     const sessions = await request("GET", `/sessions?userId=${encodeURIComponent(userId)}`);
     write((d) => { d.sessions = [...d.sessions.filter((s) => s.userId !== userId), ...sessions]; });
     return [...sessions].sort((a, b) => b.date - a.date);
@@ -264,7 +314,7 @@ export async function getSessions(userId) {
 
 /** Saves a finished session (without id). Resolves with the stored session. */
 export async function saveSession(session) {
-  const saved = USE_BACKEND ? await request("POST", "/sessions", session) : { ...session, id: session.id || uid("s") };
+  const saved = uses("interview") ? await request("POST", "/sessions", session) : { ...session, id: session.id || uid("s") };
   write((d) => upsert(d.sessions, saved));
   return saved;
 }
@@ -274,34 +324,62 @@ export async function saveSession(session) {
    ========================================================= */
 
 /**
- * All job postings. In backend mode this also refreshes the cache with the jobs and
- * the applications the caller may see (a candidate's own, or those on an employer's jobs).
+ * Admin configuration (roles, skills, scoring rules) as the employer pages need it.
+ * With the employer module on it comes from the backend and is cached as `db.serverConfig`,
+ * leaving the local `db.config` that the candidate and admin pages use untouched.
+ */
+export async function getConfig() {
+  if (!uses("employer")) return getDb().config;
+  const config = await request("GET", "/config");
+  write((d) => { d.serverConfig = config; });
+  return config;
+}
+
+/** The config the employer pages render with: the backend's once loaded, else the local one. */
+export function employerConfig(db = getDb()) {
+  return (uses("employer") && db.serverConfig) || db.config;
+}
+
+/**
+ * All job postings the caller may see. With the employer module on, this replaces the cached
+ * jobs, and the cached applications the caller owns (a candidate's own, or those on an
+ * employer's jobs), with the backend's.
  */
 export async function getJobs() {
-  if (USE_BACKEND) {
-    const { jobs, applications } = await request("GET", "/jobs");
-    write((d) => {
-      d.jobs = jobs;
-      const ids = new Set(applications.map((a) => a.id));
-      d.applications = [...d.applications.filter((a) => !ids.has(a.id)), ...applications];
-    });
-    return jobs;
-  }
-  return getDb().jobs;
+  if (!uses("employer")) return getDb().jobs;
+  const me = store.user;
+  const { jobs, applications } = await request("GET", "/jobs");
+  write((d) => {
+    d.jobs = jobs;
+    const mine = new Set(jobs.filter((j) => j.employerId === me?.id).map((j) => j.id));
+    const stale = (a) => (me?.role === "employer" ? mine.has(a.jobId) : a.candidateId === me?.id);
+    const ids = new Set(applications.map((a) => a.id));
+    d.applications = [...d.applications.filter((a) => !stale(a) && !ids.has(a.id)), ...applications];
+  });
+  return jobs;
 }
 
 /** Creates (no id) or updates (with id) a job posting for `employer`. Resolves with the stored job. */
 export async function saveJob(job, employer) {
   let saved;
-  if (USE_BACKEND) saved = job.id ? await request("PUT", `/jobs/${encodeURIComponent(job.id)}`, job) : await request("POST", "/jobs", job);
+  if (uses("employer")) saved = job.id ? await request("PUT", `/jobs/${encodeURIComponent(job.id)}`, job) : await request("POST", "/jobs", job);
   else saved = job.id ? job : { ...job, id: uid("job"), employerId: employer.id, company: employer.company, createdAt: Date.now() };
+  write((d) => upsert(d.jobs, saved));
+  return saved;
+}
+
+/** Closes or reopens a job posting: "open" | "closed". Resolves with the stored job. */
+export async function setJobStatus(job, status) {
+  const saved = uses("employer")
+    ? await request("PATCH", `/jobs/${encodeURIComponent(job.id)}/status`, { status })
+    : { ...job, status };
   write((d) => upsert(d.jobs, saved));
   return saved;
 }
 
 /** Applies the candidate to a job. `consent` shares their results with the employer. */
 export async function applyToJob({ jobId, candidateId, consent }) {
-  const application = USE_BACKEND
+  const application = uses("employer")
     ? await request("POST", `/jobs/${encodeURIComponent(jobId)}/apply`, { consent })
     : { id: uid("app"), jobId, candidateId, date: Date.now(), consent };
   write((d) => {
@@ -313,13 +391,13 @@ export async function applyToJob({ jobId, candidateId, consent }) {
 
 /** Withdraws the candidate's application to a job. */
 export async function withdrawApplication({ jobId, candidateId }) {
-  if (USE_BACKEND) await request("DELETE", `/jobs/${encodeURIComponent(jobId)}/apply`);
+  if (uses("employer")) await request("DELETE", `/jobs/${encodeURIComponent(jobId)}/apply`);
   write((d) => { d.applications = d.applications.filter((a) => !(a.jobId === jobId && a.candidateId === candidateId)); });
 }
 
 /** Employer moves an application through the pipeline: "new" | "shortlisted" | "declined". */
 export async function setApplicationStatus(applicationId, status) {
-  if (USE_BACKEND) await request("PATCH", `/applications/${encodeURIComponent(applicationId)}`, { status });
+  if (uses("employer")) await request("PATCH", `/applications/${encodeURIComponent(applicationId)}`, { status });
   write((d) => {
     const app = d.applications.find((a) => a.id === applicationId);
     if (app) app.status = status;
@@ -332,7 +410,7 @@ export async function setApplicationStatus(applicationId, status) {
  * Resolves with { job, visible: [{ app, cand, profile, sessions, fit }], hidden }.
  */
 export async function getCandidates(jobId) {
-  if (USE_BACKEND) {
+  if (uses("employer")) {
     const { job, candidates, hidden } = await request("GET", `/jobs/${encodeURIComponent(jobId)}/candidates`);
     const visible = candidates
       .map((c) => ({ app: c.application, cand: c.candidate, profile: c.profile, sessions: c.sessions, fit: c.fit }))
@@ -342,9 +420,9 @@ export async function getCandidates(jobId) {
   return getCandidatesSync(jobId);
 }
 
-/** Local-mode getCandidates without the Promise, so lists render in the same frame. Null in backend mode. */
+/** Local getCandidates without the Promise, so lists render in the same frame. Null when the backend ranks. */
 export function getCandidatesSync(jobId, db = getDb()) {
-  if (USE_BACKEND) return null;
+  if (uses("employer")) return null;
   const job = db.jobs.find((j) => j.id === jobId);
   if (!job) return { job: null, visible: [], hidden: 0 };
   const visible = [];

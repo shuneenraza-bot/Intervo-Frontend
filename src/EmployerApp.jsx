@@ -16,17 +16,21 @@ function useApplicants(jobIds) {
   const { db, notify } = useStore();
   const key = jobIds.join(",");
   const local = useMemo(
-    () => (api.USE_BACKEND ? null : Object.fromEntries((key ? key.split(",") : []).map((id) => [id, api.getCandidatesSync(id, db)]))),
+    () => (api.uses("employer") ? null : Object.fromEntries((key ? key.split(",") : []).map((id) => [id, api.getCandidatesSync(id, db)]))),
     [key, db]
   );
   const [fetched, setFetched] = useState({});
   useEffect(() => {
-    if (!api.USE_BACKEND) return;
+    if (!api.uses("employer")) return;
     let live = true;
     const ids = key ? key.split(",") : [];
-    Promise.all(ids.map((id) => api.getCandidates(id)))
-      .then((list) => live && setFetched(Object.fromEntries(ids.map((id, i) => [id, list[i]]))))
-      .catch((e) => live && notify(e.message, "bad"));
+    Promise.allSettled(ids.map((id) => api.getCandidates(id))).then((results) => {
+      if (!live) return;
+      setFetched((prev) => Object.fromEntries(ids.map((id, i) => [id, results[i].value || prev[id] || NO_APPLICANTS])));
+      // A 404 is a cached job the server doesn't have (the job list refresh removes it); a 401 has signed the user out.
+      const failed = results.find((r) => r.status === "rejected" && ![401, 404].includes(r.reason.status));
+      if (failed) notify(failed.reason.message, "bad");
+    });
     return () => { live = false; };
   }, [key, db, notify]);
   return local || fetched;
@@ -37,7 +41,8 @@ export default function EmployerApp({ page, go, params }) {
   const myJobs = db.jobs.filter((j) => j.employerId === user.id).sort((a, b) => b.createdAt - a.createdAt);
 
   useEffect(() => {
-    api.getJobs().catch((e) => notify(e.message, "bad"));
+    // Roles, skills and scoring weights first, then the jobs (both are local reads when the employer module is off).
+    api.getConfig().then(() => api.getJobs()).catch((e) => notify(e.message, "bad"));
   }, [notify]);
   const [selectedJob, setSelectedJob] = useState(params.jobId || myJobs[0]?.id || "");
 
@@ -57,8 +62,8 @@ export default function EmployerApp({ page, go, params }) {
 function EmployerOverview({ myJobs, go, openCandidates }) {
   const { db, user } = useStore();
   const apps = db.applications.filter((a) => myJobs.some((j) => j.id === a.jobId));
-  const shared = apps.filter((a) => a.consent && db.profiles[a.candidateId]?.shareWithEmployers !== false);
   const ranked = useApplicants(myJobs.map((j) => j.id));
+  const shared = Object.values(ranked).flatMap((r) => r.visible); // applicants who consented and share their profile
   const top = Object.values(ranked)
     .flatMap(({ job, visible }) => visible.map(({ app, cand, fit }) => ({ a: app, job, cand, fit })))
     .sort((x, y) => y.fit.total - x.fit.total || db.applications.indexOf(x.a) - db.applications.indexOf(y.a));
@@ -122,6 +127,7 @@ const EMPTY_JOB = { title: "", roleId: "", location: "", mode: "On-site", level:
 
 function JobPostings({ myJobs, openCandidates }) {
   const { db, notify, user } = useStore();
+  const config = api.employerConfig(db);
   const [editing, setEditing] = useState(null);
 
   async function save(job) {
@@ -135,13 +141,13 @@ function JobPostings({ myJobs, openCandidates }) {
   }
 
   function toggleStatus(job) {
-    api.saveJob({ ...job, status: job.status === "open" ? "closed" : "open" }, user).catch((e) => notify(e.message, "bad"));
+    api.setJobStatus(job, job.status === "open" ? "closed" : "open").catch((e) => notify(e.message, "bad"));
   }
 
   return (
     <>
       <PageHeader kicker="Recruitment" title="Job postings" subtitle="Define required skills with weights and the success criteria used in the suitability score."
-        actions={<button className="btn btn--primary" onClick={() => setEditing({ ...EMPTY_JOB, roleId: db.config.roles[0].id, skills: db.config.roles[0].skills })}><Icon name="plus" size={16} /> New job</button>} />
+        actions={<button className="btn btn--primary" onClick={() => setEditing({ ...EMPTY_JOB, roleId: config.roles[0].id, skills: config.roles[0].skills })}><Icon name="plus" size={16} /> New job</button>} />
       {myJobs.length ? (
         <div className="jobs">
           {myJobs.map((job, i) => {
@@ -150,7 +156,7 @@ function JobPostings({ myJobs, openCandidates }) {
               <article className="job" key={job.id}>
                 <div className="job__head">
                   <span className="job__logo" data-tone={i % 4}>{initials(job.title)}</span>
-                  <div className="job__title"><h3>{job.title}</h3><p>{db.config.roles.find((r) => r.id === job.roleId)?.title || "Custom role"} · {job.level}</p></div>
+                  <div className="job__title"><h3>{job.title}</h3><p>{config.roles.find((r) => r.id === job.roleId)?.title || "Custom role"} · {job.level}</p></div>
                   <span className={`badge ${job.status === "open" ? "badge--good" : "badge--muted"}`}>{job.status}</span>
                 </div>
                 <div className="job__meta">
@@ -175,7 +181,7 @@ function JobPostings({ myJobs, openCandidates }) {
           })}
         </div>
       ) : (
-        <Card><Empty icon="briefcase" title="No postings yet" text="Create your first job posting." action="New job" onAction={() => setEditing({ ...EMPTY_JOB, roleId: db.config.roles[0].id, skills: db.config.roles[0].skills })} /></Card>
+        <Card><Empty icon="briefcase" title="No postings yet" text="Create your first job posting." action="New job" onAction={() => setEditing({ ...EMPTY_JOB, roleId: config.roles[0].id, skills: config.roles[0].skills })} /></Card>
       )}
       {editing && <JobEditor job={editing} onClose={() => setEditing(null)} onSave={save} />}
     </>
@@ -184,14 +190,15 @@ function JobPostings({ myJobs, openCandidates }) {
 
 function JobEditor({ job, onClose, onSave }) {
   const { db } = useStore();
+  const config = api.employerConfig(db);
   const [form, setForm] = useState(structuredClone(job));
   const [error, setError] = useState("");
   const [newSkill, setNewSkill] = useState("");
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
-  const available = db.config.skills.filter((s) => !form.skills.some((x) => x.name === s.name));
+  const available = config.skills.filter((s) => !form.skills.some((x) => x.name === s.name));
 
   function applyTemplate(roleId) {
-    const role = db.config.roles.find((r) => r.id === roleId);
+    const role = config.roles.find((r) => r.id === roleId);
     setForm((f) => ({ ...f, roleId, skills: role ? structuredClone(role.skills) : f.skills, title: f.title || (role ? `Junior ${role.title}` : "") }));
   }
 
@@ -214,7 +221,7 @@ function JobEditor({ job, onClose, onSave }) {
           <div className="field">
             <label htmlFor="jr">Role template</label>
             <select id="jr" className="select" value={form.roleId} onChange={(e) => applyTemplate(e.target.value)}>
-              {db.config.roles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+              {config.roles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
             </select>
           </div>
           <div className="field">
@@ -290,7 +297,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
   const { db, notify } = useStore();
   const { job, visible, hidden } = useApplicants(jobId ? [jobId] : [])[jobId] || NO_APPLICANTS;
   const [openId, setOpenId] = useState(null);
-  const w = db.config.rules.suitability;
+  const w = api.employerConfig(db).rules.suitability;
 
   if (!myJobs.length) return (
     <>

@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { DB_VERSION, seedDB } from "./data";
-import { clearToken, connectStore } from "./api";
+import { clearToken, connectStore, restoreSession } from "./api";
 import { navigate } from "./router";
 
 /*
@@ -96,10 +96,19 @@ export function StoreProvider({ children }) {
     logout();
   }, [logout]);
 
-  // Give the API layer access to the store: local mode reads/writes it, backend mode caches into it.
-  connectStore({ db, update, logout });
-
   const user = db.users.find((u) => u.id === authId) || null;
+
+  // Give the API layer access to the store: local modules read/write it, backend modules cache into it.
+  connectStore({ db, update, user, logout, notify });
+
+  // A remembered sign-in is re-checked with the backend once on load (a no-op when auth is local).
+  useEffect(() => {
+    if (!authId) return;
+    restoreSession().catch((e) => {
+      if (e.status !== 401) notify(e.message, "bad"); // a 401 has already signed the user out
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const value = useMemo(
     () => ({ db, update, user, login, logout, notify, toast, resetDemo }),

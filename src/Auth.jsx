@@ -312,7 +312,8 @@ function SignUp({ role, setRole }) {
     const email = form.email.trim().toLowerCase();
     if (form.name.trim().length < 3) return setError("Enter your full name.");
     if (!EMAIL_RE.test(email)) return setError("Enter a valid email address.");
-    if (db.users.some((u) => u.email === email)) return setError("An account with this email already exists.");
+    // With backend auth the server is the judge of duplicates (409 from signup).
+    if (!api.uses("auth") && db.users.some((u) => u.email === email)) return setError("An account with this email already exists.");
     if (role === "employer" && form.company.trim().length < 2) return setError("Enter your company name.");
     if (strength.score < 3) return setError("Use at least 8 characters with upper and lower case letters and a number.");
     if (form.password !== form.confirm) return setError("Passwords don't match.");
