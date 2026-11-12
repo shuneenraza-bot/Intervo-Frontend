@@ -19,7 +19,13 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
     notify("Profile updated");
   }
 
-  function setShare(on) {
+  async function setShare(on) {
+    try {
+      // Server first: the switch must not show "off" while employers can still see the results.
+      await api.syncProfile({ ...profile, shareWithEmployers: on });
+    } catch (e) {
+      return notify(e.message, "bad");
+    }
     update((d) => { d.profiles[user.id] = { ...d.profiles[user.id], shareWithEmployers: on }; });
     notify(on ? "Employers you apply to can see your results" : "Sharing paused for all employers");
   }

@@ -88,6 +88,7 @@ export default function CVPage({ user, db, profile, go }) {
     update((d) => {
       d.profiles[user.id] = { ...d.profiles[user.id], cv: next, skills: next.skills, fileName: next.fileName };
     });
+    api.syncProfileSoon({ ...profile, cv: next, skills: next.skills });
     if (message) notify(message);
   }
 

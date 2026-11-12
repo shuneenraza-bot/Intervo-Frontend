@@ -8,7 +8,8 @@
  *                                            API_URL with a JWT bearer token; the rest stay local.
  *
  *   auth      lookup, signup, login (password or face), face enrol/delete, me
- *   employer  config, jobs, apply/withdraw, application status, candidate ranking
+ *   employer  config, jobs, apply/withdraw, application status, candidate ranking,
+ *             plus the candidate sync (profile and finished sessions) that the ranking reads
  *   cv        CV analysis and JD parsing        (no backend endpoints yet)
  *   interview answer evaluation and sessions    (no backend endpoints yet)
  *
@@ -316,7 +317,82 @@ export async function getSessions(userId) {
 export async function saveSession(session) {
   const saved = uses("interview") ? await request("POST", "/sessions", session) : { ...session, id: session.id || uid("s") };
   write((d) => upsert(d.sessions, saved));
+  if (!uses("interview")) pushSession(saved).catch(syncFailed); // the local save already succeeded
   return saved;
+}
+
+/* =========================================================
+   Candidate sync (employer module)
+   =========================================================
+ * The candidate pages keep CV skills and session scores in the local store. With the
+ * employer module on, the backend ranks applicants, so it needs a copy of exactly what
+ * the suitability score reads: skills, three CV facts, the sharing switch and per-answer
+ * scores. CV text, contact details and answer text never leave the browser. */
+
+const syncsCandidate = () => uses("employer") && store?.user?.role === "candidate";
+const syncFailed = (e) => console.warn("Couldn't sync with the server:", e.message);
+const clip = (value) => String(value ?? "").slice(0, 200);
+const score100 = (n) => Math.min(100, Math.max(0, Math.round(Number(n) || 0)));
+
+function profileBody(profile = {}) {
+  const cv = profile.cv;
+  return {
+    skills: (profile.skills || []).filter((s) => typeof s === "string"),
+    cv: cv
+      ? {
+          education: (cv.education || []).slice(0, 20).map((e) => ({ degree: clip(e.degree), institution: clip(e.institution) })),
+          experienceYears: Math.min(80, Math.max(0, Number(cv.experienceYears) || 0)),
+          projects: (cv.projects || []).slice(0, 50).map((p) => ({ name: clip(p.name) })),
+        }
+      : null,
+    shareWithEmployers: profile.shareWithEmployers !== false, // same rule as the Profile page switch
+  };
+}
+
+let profileTimer = null;
+
+/**
+ * Saves the candidate's skills, CV summary and sharing switch to the backend. Pass the
+ * profile as it will be after the change (the store updates on the next render). Does
+ * nothing unless the employer module is on and a candidate is signed in.
+ */
+export async function syncProfile(profile) {
+  clearTimeout(profileTimer);
+  if (!syncsCandidate()) return;
+  await request("PUT", "/profile", profileBody(profile));
+}
+
+/** Background syncProfile for rapid edits (the CV editor): waits for a pause, never throws. */
+export function syncProfileSoon(profile) {
+  clearTimeout(profileTimer);
+  if (!syncsCandidate()) return;
+  profileTimer = setTimeout(() => syncProfile(profile).catch(syncFailed), 600);
+}
+
+/** Sends one finished session's scores. The backend ignores a session id it already has. */
+async function pushSession(session) {
+  if (!syncsCandidate()) return;
+  await request("POST", "/sessions", {
+    id: session.id, roleId: session.roleId, mode: session.mode, date: session.date, score: score100(session.score),
+    answers: session.answers.map((a) => ({
+      questionId: a.questionId || null, question: String(a.question ?? "").slice(0, 2000), skill: a.skill, type: a.type,
+      score: score100(a.score), criteria: a.criteria || {}, indicators: a.indicators || null, reason: a.reason || null,
+    })),
+  });
+}
+
+/**
+ * Sends everything the candidate has locally (profile and all sessions), so data from
+ * before the sync existed reaches the server. Never throws: a failure here must not block
+ * the action that triggered it.
+ */
+async function syncCandidateData(candidateId) {
+  if (!syncsCandidate()) return;
+  const db = getDb();
+  await syncProfile(db.profiles[candidateId]).catch(syncFailed);
+  for (const session of db.sessions.filter((s) => s.userId === candidateId)) {
+    await pushSession(session).catch(syncFailed);
+  }
 }
 
 /* =========================================================
@@ -379,6 +455,7 @@ export async function setJobStatus(job, status) {
 
 /** Applies the candidate to a job. `consent` shares their results with the employer. */
 export async function applyToJob({ jobId, candidateId, consent }) {
+  await syncCandidateData(candidateId); // the employer's ranking reads the server copy
   const application = uses("employer")
     ? await request("POST", `/jobs/${encodeURIComponent(jobId)}/apply`, { consent })
     : { id: uid("app"), jobId, candidateId, date: Date.now(), consent };

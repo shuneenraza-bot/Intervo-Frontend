@@ -27,6 +27,7 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `evaluateAnswer` | POST | `/interview/evaluate` | candidate |
 | `getSessions` | GET | `/sessions?userId=…` | candidate (own) |
 | `saveSession` | POST | `/sessions` | candidate |
+| `syncProfile` | PUT | `/profile` | candidate |
 | `getJobs` | GET | `/jobs` | any signed-in user |
 | `saveJob` (new) | POST | `/jobs` | employer |
 | `saveJob` (edit) | PUT | `/jobs/{jobId}` | employer (owner) |
@@ -158,6 +159,28 @@ Stores a finished session. The body is a `Session` **without `id`**. Set `userId
 
 Response `201`: the stored `Session` (with `id`).
 
+**Built as a score sync.** With the `employer` module on (and `interview` off), the browser still scores and stores sessions itself, and sends a copy of each finished one here so the employer's ranking has real data:
+
+```ts
+{ id: string; roleId: string; mode: "text" | "voice" | "video"; date: number; score: number;
+  answers: { questionId, question, skill, type, score, criteria, indicators, reason }[] }
+```
+- No answer text or follow-up is sent; the server stores `answer: ""`.
+- `id` is the browser's session id. Sending an id the candidate already saved returns the stored session with `200` and changes nothing, so re-sending is safe. An id that belongs to someone else is `409`.
+- Skills, roles and questions the server doesn't know are stored without the link (`skill: ""`, `roleId: null`, `questionId: null`).
+
+### PUT `/profile`
+Candidate only. Replaces what the suitability score reads from the profile:
+
+```ts
+{ skills: string[];
+  cv: { education: { degree, institution }[]; experienceYears: number; projects: { name }[] } | null;
+  shareWithEmployers: boolean }
+```
+Response `200`: the same object as stored. CV text and contact details are not sent, and are ignored if present.
+
+The frontend calls it after a CV analysis or edit is saved (`syncProfileSoon`, in the background), when the sharing switch changes (`syncProfile`, the switch only moves if the server accepted it), and once, together with every local session, just before `applyToJob`.
+
 ### GET `/jobs`
 Response `200`:
 ```json
@@ -287,9 +310,9 @@ Suitability {
 
 ## Not covered yet
 
-These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (`/cv/*`, `/jd/parse`, `/interview/evaluate` and `/sessions` above are also not built yet):
+These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (`/cv/*`, `/jd/parse`, `/interview/evaluate` and `GET /sessions` above are also not built yet):
 
 - Admin configuration: domains, roles, skills, questions, criteria, rules (`AdminApp.jsx`). The local evaluator and parsers read these.
-- Profile edits: name, sharing toggle, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
+- Profile edits: name, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
 - Recording `lastLogin` after face verification (`Auth.jsx`).
 - Fetching a user's profile from the server. The candidate's own profile currently comes from the local cache, filled by `analyzeCV`.

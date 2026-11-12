@@ -301,6 +301,7 @@ button:disabled { cursor: not-allowed; }
 .pill--good { color: var(--good-ink); background: var(--good-bg); }
 .pill--fair { color: var(--fair-ink); background: var(--fair-bg); }
 .pill--low { color: var(--low-ink); background: var(--low-bg); }
+.pill--muted { color: var(--muted); background: var(--line-2); white-space: nowrap; }
 
 .score-text { font-weight: 700; font-variant-numeric: tabular-nums; }
 .score-text--good { color: var(--good-ink); }

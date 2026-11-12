@@ -73,7 +73,7 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
       <PageHeader kicker={user.company} title="Hiring overview" subtitle="Your open roles and the candidates who chose to share their interview evidence with you."
         actions={<button className="btn btn--primary" onClick={() => go("jobs")}><Icon name="plus" size={16} /> Post a job</button>} />
       <section className="stats">
-        <Stat label="Open jobs" value={myJobs.filter((j) => j.status === "open").length} hint={`${myJobs.length} total postings`} icon="briefcase" accent="blue" />
+        <Stat label="Open jobs" value={myJobs.filter((j) => j.status === "open").length} hint={plural(myJobs.length, "total posting")} icon="briefcase" accent="blue" />
         <Stat label="Applicants" value={apps.length} hint="Across all postings" icon="users" accent="violet" />
         <Stat label="Sharing evidence" value={shared.length} hint={`${apps.length - shared.length} without consent`} icon="shield" accent="green" />
         <Stat label="Avg suitability" value={top.length ? `${Math.round(top.reduce((s, t) => s + t.fit.total, 0) / top.length)}%` : "—"} hint="Opted-in applicants" icon="target" accent="amber" />
@@ -107,7 +107,9 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
                   <span className="avatar">{initials(cand.name)}</span>
                   <div><strong>{cand.name}</strong><span>{job.title}</span></div>
                   {fit.meetsCriteria && <Icon name="checkCircle" size={16} className="rank-list__ok" />}
-                  <span className={`pill pill--${scoreTone(fit.total)}`}>{fit.total}%</span>
+                  {fit.total > 0
+                    ? <span className={`pill pill--${scoreTone(fit.total)}`}>{fit.total}%</span>
+                    : <span className="pill pill--muted">No data yet</span>}
                 </li>
               ))}
             </ul>
@@ -336,7 +338,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                     ))}
                   </div>
                   {fit.meetsCriteria ? <span className="badge badge--good"><Icon name="checkCircle" size={12} /> Meets criteria</span> : <span className="badge badge--muted">Below criteria</span>}
-                  <ScoreRing value={fit.total} size={58} stroke={6} />
+                  <ScoreRing value={fit.total} size={58} stroke={6} tone={fit.total > 0 ? undefined : "muted"} />
                   <Icon name="chevronDown" size={18} className="cand__chev" />
                 </button>
                 {open && (
