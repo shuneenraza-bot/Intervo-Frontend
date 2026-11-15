@@ -247,3 +247,10 @@ export function Modal({ open, title, subtitle, onClose, children, footer, wide =
 export function Note({ children, icon = "info" }) {
   return <p className="note"><Icon name={icon} size={15} /> <span>{children}</span></p>;
 }
+
+/** Which engine produced a result: "gemini", "rules" or "gemini+rules" (Gemini with rule-based gap filling). */
+export function ProviderBadge({ provider, verb = "Analysed" }) {
+  if (!provider) return null;
+  const label = provider === "gemini" ? `${verb} by Gemini` : provider === "gemini+rules" ? "Gemini + rule-based" : "Rule-based";
+  return <span className={`badge badge--${provider.startsWith("gemini") ? "brand" : "muted"}`}><Icon name="sparkle" size={12} /> {label}</span>;
+}

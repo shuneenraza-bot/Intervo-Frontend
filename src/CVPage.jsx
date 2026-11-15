@@ -4,7 +4,7 @@ import { useStore } from "./store";
 import { extractSkills, matchSkills, plural } from "./lib";
 import { ACCEPTED, CVError, MAX_FILE_MB, educationLevel, extractText, monthsBetween } from "./cvParser";
 import * as api from "./api";
-import { Card, Empty, Modal, Note, PageHeader, ScoreRing, Segmented, Weight } from "./ui";
+import { Card, Empty, Modal, Note, PageHeader, ProviderBadge, ScoreRing, Segmented, Weight } from "./ui";
 
 const STEPS = [
   { key: "read", label: "Reading file" },
@@ -62,33 +62,40 @@ export default function CVPage({ user, db, profile, go }) {
   const [jd, setJd] = useState(profile.jd || "");
   const [jdFile, setJdFile] = useState("");
   const [error, setError] = useState("");
+  const [analysing, setAnalysing] = useState(false);
+  const remote = api.uses("candidate");
+
+  // The saved CV is loaded from the backend after this page mounts; follow it into the editor.
+  useEffect(() => { if (profile.cv) setCv(profile.cv); }, [profile.cv]);
 
   const role = roles.find((r) => r.id === roleId) || roles[0];
   const domainRoles = roles.filter((r) => r.domainId === domainId);
   // Live JD preview: parsed in the same render locally; debounced server request in backend mode.
   // skillConfig is read inside parseJDSync, so it stays a dependency (re-parse when the admin edits skills).
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const localJD = useMemo(() => (!api.uses("cv") && jd.trim().length > 30 ? api.parseJDSync(jd, role.skills) : null), [jd, skillConfig, role]);
+  const localJD = useMemo(() => (!remote && jd.trim().length > 30 ? api.parseJDSync(jd, role.skills) : null), [jd, skillConfig, role]);
   const [remoteJD, setRemoteJD] = useState(null);
   useEffect(() => {
-    if (!api.uses("cv")) return;
+    if (!remote) return;
     let live = true;
     const t = setTimeout(() => {
       if (jd.trim().length <= 30) return setRemoteJD(null);
       api.parseJD(jd, role.skills).then((r) => live && setRemoteJD(r)).catch(() => live && setRemoteJD(null));
     }, 400);
     return () => { live = false; clearTimeout(t); };
-  }, [jd, role]);
-  const jdParsed = api.uses("cv") ? remoteJD : localJD;
+  }, [jd, role, remote]);
+  const jdParsed = remote ? remoteJD : localJD;
   const result = profile.result;
 
   /* ---------- Persist ---------- */
-  function saveCV(next, message) {
+  // `saved`: the server already stored this CV (it came from the upload), so there is nothing to PUT.
+  function saveCV(next, message, { saved = false } = {}) {
     setCv(next);
     update((d) => {
       d.profiles[user.id] = { ...d.profiles[user.id], cv: next, skills: next.skills, fileName: next.fileName };
     });
     api.syncProfileSoon({ ...profile, cv: next, skills: next.skills });
+    if (!saved) api.saveCVEdits(next).catch((e) => notify(`Couldn't save your CV changes: ${e.message}`, "bad"));
     if (message) notify(message);
   }
 
@@ -100,11 +107,11 @@ export default function CVPage({ user, db, profile, go }) {
     try {
       const parsed = await api.analyzeCV({ file }, (step) => setStatus((s) => ({ ...s, step })));
       await new Promise((r) => setTimeout(r, 350)); // let the step animation land
-      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`);
+      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`, { saved: remote });
       setStatus({ state: "idle" });
     } catch (e) {
       const known = e instanceof CVError || e instanceof api.ApiError;
-      setStatus({ state: "error", message: known ? e.message : "Something went wrong while reading this file. Try another format." });
+      setStatus({ state: "error", message: known ? e.message : "Something went wrong while reading this file. Try another format.", retry: e.retryable ? file : null });
       if (!known) console.error(e);
     }
     if (fileRef.current) fileRef.current.value = "";
@@ -114,7 +121,7 @@ export default function CVPage({ user, db, profile, go }) {
     if (pasted.trim().length < 30) return setStatus({ state: "error", message: "Paste a bit more of your CV — at least a few lines." });
     try {
       const parsed = await api.analyzeCV({ text: pasted });
-      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`);
+      saveCV(parsed, `CV analysed — ${plural(parsed.skills.length, "skill")} found`, { saved: remote });
       setPasteMode(false);
       setStatus({ state: "idle" });
     } catch (e) {
@@ -134,12 +141,30 @@ export default function CVPage({ user, db, profile, go }) {
   }
 
   /* ---------- Analyse ---------- */
-  function analyse() {
+  async function analyse() {
     if (!cv?.skills?.length) return setError("Upload your CV (or add skills) before running the analysis.");
-    const required = jdParsed?.skills.length ? jdParsed.skills : role.skills;
-    const match = matchSkills(cv.skills, required, skillConfig);
-    const checks = [];
-    if (jdParsed?.minYears) {
+    let jdInfo = jdParsed;
+    let match;
+    let checks = [];
+    if (remote) {
+      setAnalysing(true);
+      setError("");
+      try {
+        // The preview is debounced; parse now if the user clicked before it came back.
+        if (!jdInfo && jd.trim().length > 30) jdInfo = await api.parseJD(jd, role.skills);
+        const useJD = jdInfo?.skills.length ? jdInfo : null;
+        const res = await api.matchSkillGap(useJD ? { jd: useJD } : { roleId });
+        checks = res.checks;
+        match = { matched: res.matched, partial: res.partial, missing: res.missing, percentage: res.percentage };
+      } catch (e) {
+        return setError(e.message);
+      } finally {
+        setAnalysing(false);
+      }
+    } else {
+      match = matchSkills(cv.skills, jdInfo?.skills.length ? jdInfo.skills : role.skills, skillConfig);
+    }
+    if (!remote && jdParsed?.minYears) {
       checks.push({
         label: `Experience: ${jdParsed.minYears}+ year${jdParsed.minYears > 1 ? "s" : ""} asked`,
         ok: (cv.experienceYears || 0) >= jdParsed.minYears,
@@ -147,7 +172,7 @@ export default function CVPage({ user, db, profile, go }) {
         soft: jdParsed.fresherFriendly,
       });
     }
-    if (jdParsed?.education) {
+    if (!remote && jdParsed?.education) {
       const have = Math.max(0, ...(cv.education || []).map((e) => educationLevel(e.degree)));
       checks.push({ label: `Education: ${jdParsed.education}`, ok: have >= educationLevel(jdParsed.education), detail: cv.education?.[0]?.degree ? `Your highest: ${[...cv.education].sort((a, b) => educationLevel(b.degree) - educationLevel(a.degree))[0].degree}` : "No degree found in your CV" });
     }
@@ -155,7 +180,7 @@ export default function CVPage({ user, db, profile, go }) {
     update((d) => {
       d.profiles[user.id] = {
         ...d.profiles[user.id], roleId, jd,
-        result: { ...match, checks, roleTitle: jdParsed?.title && jdParsed.skills.length ? jdParsed.title : role.title, source: jdParsed?.skills.length ? (jdFile ? `Job description · ${jdFile}` : "Pasted job description") : "Role template", date: Date.now() },
+        result: { ...match, checks, roleTitle: jdInfo?.title && jdInfo.skills.length ? jdInfo.title : role.title, source: jdInfo?.skills.length ? (jdFile ? `Job description · ${jdFile}` : "Pasted job description") : "Role template", date: Date.now() },
       };
     });
     notify("Skill-gap analysis saved");
@@ -222,7 +247,10 @@ export default function CVPage({ user, db, profile, go }) {
             {status.state === "error" && (
               <div className="upload-error">
                 <Icon name="alert" size={18} />
-                <div><strong>We couldn't read that file</strong><p>{status.message}</p></div>
+                <div>
+                  <strong>We couldn't read that file</strong><p>{status.message}</p>
+                  {status.retry && <button className="btn btn--ghost btn--sm" onClick={() => handleFile(status.retry)}><Icon name="refresh" size={14} /> Try again</button>}
+                </div>
                 <button className="icon-btn icon-btn--sm" onClick={() => setStatus({ state: "idle" })} aria-label="Dismiss"><Icon name="x" size={14} /></button>
               </div>
             )}
@@ -257,6 +285,7 @@ export default function CVPage({ user, db, profile, go }) {
                   <div className="jd-summary">
                     <div className="jd-summary__head">
                       <span><Icon name="scan" size={14} /> Requirements found</span>
+                      {remote && <ProviderBadge provider={jdParsed.provider} />}
                       {jd && <button className="btn btn--text" onClick={() => { setJd(""); setJdFile(""); }}>Clear</button>}
                     </div>
                     {jdParsed.skills.length ? (
@@ -272,7 +301,7 @@ export default function CVPage({ user, db, profile, go }) {
               </div>
 
               {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
-              <button className="btn btn--primary btn--lg" onClick={analyse} disabled={working}>Analyse skill gap <Icon name="arrowRight" size={16} /></button>
+              <button className="btn btn--primary btn--lg" onClick={analyse} disabled={working || analysing}>{analysing ? <><span className="spinner" /> Analysing…</> : <>Analyse skill gap <Icon name="arrowRight" size={16} /></>}</button>
             </div>
           </Card>
         </div>
@@ -308,7 +337,9 @@ export default function CVPage({ user, db, profile, go }) {
           ) : (
             <Empty icon="target" title="No analysis yet" text="Upload your CV, choose a role or paste a job description, then run the analysis." />
           )}
-          <Note>Parsing runs in your browser with fixed rules, so the same CV always gives the same result. AI-assisted extraction (Gemini) will run on the FastAPI server once connected.</Note>
+          <Note>{remote
+            ? "Your CV and job description are read on the server by Gemini, with a rule-based parser as backup. The skill match itself uses fixed rules, so the same CV and role always give the same score."
+            : "Parsing runs in your browser with fixed rules, so the same CV always gives the same result. AI-assisted extraction (Gemini) will run on the FastAPI server once connected."}</Note>
         </Card>
       </div>
 
@@ -335,6 +366,7 @@ function ParsedCV({ cv, skillConfig, onChange, onShowText, onPaste }) {
         <div className="parsed__bar">
           <div className="parsed__badges">
             {cv.fileType && <span className="badge badge--brand">{cv.fileType}</span>}
+            <ProviderBadge provider={cv.provider} />
             {(cv.sectionsFound || []).map((s) => <span key={s} className="badge badge--muted">{s}</span>)}
           </div>
           <div className="btn-row">

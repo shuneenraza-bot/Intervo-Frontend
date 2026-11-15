@@ -4,14 +4,15 @@
  *
  *   VITE_BACKEND_MODULES = ""              → everything runs in the browser against the
  *                                            localStorage store (lib.js / cvParser.js).
- *   VITE_BACKEND_MODULES = "auth,employer" → the listed modules call the FastAPI backend at
+ *   VITE_BACKEND_MODULES = "auth,employer,candidate" → the listed modules call the FastAPI backend at
  *                                            API_URL with a JWT bearer token; the rest stay local.
  *
  *   auth      lookup, signup, login (password or face), face enrol/delete, me
  *   employer  config, jobs, apply/withdraw, application status, candidate ranking,
  *             plus the candidate sync (profile and finished sessions) that the ranking reads
- *   cv        CV analysis and JD parsing        (no backend endpoints yet)
- *   interview answer evaluation and sessions    (no backend endpoints yet)
+ *   candidate CV analysis and editing, JD parsing and skill-gap match, the mock interview
+ *             (questions, Gemini/rules evaluation, voice transcription, follow-ups, finish),
+ *             progress and session history. Replaces the profile/session sync below.
  *
  * Backend responses are written back into the store, which then acts as a client-side
  * cache, so the pages render the same way whichever side did the work.
@@ -25,20 +26,21 @@ import { extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
 const MODULES = new Set(
   (import.meta.env.VITE_BACKEND_MODULES || "").split(",").map((m) => m.trim().toLowerCase()).filter(Boolean)
 );
-/** True when `module` ("auth" | "employer" | "cv" | "interview") is served by the backend. */
+/** True when `module` ("auth" | "employer" | "candidate") is served by the backend. */
 export const uses = (module) => MODULES.has(module);
 export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/+$/, "");
 
-if (uses("employer") && !uses("auth")) {
-  console.warn("VITE_BACKEND_MODULES: the employer module needs the auth module too (its requests need a JWT).");
+if ((uses("employer") || uses("candidate")) && !uses("auth")) {
+  console.warn("VITE_BACKEND_MODULES: the employer and candidate modules need the auth module too (their requests need a JWT).");
 }
 
 const TOKEN_KEY = "intervo.token";
 
 export class ApiError extends Error {
-  constructor(message, status = 0, retryAfter = null) {
+  constructor(message, status = 0, retryAfter = null, retryable = false) {
     super(message);
     this.status = status;
+    this.retryable = retryable; // offline or timed out: the same request may well work on a second try
     this.retryAfter = retryAfter; // seconds, from a 429's Retry-After header
   }
 }
@@ -94,9 +96,12 @@ function errorMessage(data, status) {
 }
 
 const OFFLINE = "Can't reach the server — is the backend running?";
+const TIMEOUT = "The AI is taking longer than usual. Please try again.";
+const AI_TIMEOUT = 30000; // ms: one Gemini evaluation, with its own retry on the server
+const SLOW_TIMEOUT = 45000; // ms: CV analysis, question planning and audio (upload + Whisper + evaluation)
 const PUBLIC_PATHS = ["/auth/lookup", "/auth/login", "/auth/signup"]; // a 401 here is a wrong password, not an expired session
 
-async function request(method, path, body) {
+async function request(method, path, body, { timeout = 0 } = {}) {
   const headers = { Accept: "application/json" };
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
@@ -107,13 +112,18 @@ async function request(method, path, body) {
     payload = JSON.stringify(body);
   }
 
+  const controller = new AbortController();
+  const timer = timeout ? setTimeout(() => controller.abort(), timeout) : null;
   let res;
+  let data;
   try {
-    res = await fetch(`${API_URL}${path}`, { method, headers, body: payload });
-  } catch {
-    throw new ApiError(OFFLINE);
+    res = await fetch(`${API_URL}${path}`, { method, headers, body: payload, signal: controller.signal });
+    data = res.status === 204 ? null : await res.json().catch(() => null);
+  } catch (e) {
+    throw e?.name === "AbortError" ? new ApiError(TIMEOUT, 0, null, true) : new ApiError(OFFLINE, 0, null, true);
+  } finally {
+    clearTimeout(timer);
   }
-  const data = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     if (res.status === 401 && !PUBLIC_PATHS.includes(path)) {
       // Missing or expired token: sign out so the user can sign in again.
@@ -265,15 +275,17 @@ export async function analyzeCV({ file, text }, onStep = () => {}) {
     ? { fileName: file.name, fileType: file.name.split(".").pop().toUpperCase(), fileSize: file.size }
     : { fileName: "", fileType: "TEXT" };
 
-  if (uses("cv")) {
+  if (uses("candidate")) {
+    // One upload does the reading, extraction and parsing server-side; the three steps pace the progress UI.
     const form = new FormData();
-    if (file) form.append("file", file);
-    else form.append("text", text);
+    form.append("file", file || new File([text], "pasted-cv.txt", { type: "text/plain" }));
+    const timers = [setTimeout(() => onStep("extract"), 700), setTimeout(() => onStep("parse"), 1800)];
     onStep("read");
-    onStep("extract");
-    const { cv, text: extracted = text || "" } = await request("POST", "/cv/analyze", form);
-    onStep("parse");
-    return { ...cv, ...meta, parsedAt: Date.now(), text: extracted.slice(0, 20000) };
+    try {
+      return serverCV(await request("POST", "/cv", form, { timeout: SLOW_TIMEOUT }), meta);
+    } finally {
+      timers.forEach(clearTimeout);
+    }
   }
 
   const source = file ? await extractText(file, onStep) : text;
@@ -282,43 +294,232 @@ export async function analyzeCV({ file, text }, onStep = () => {}) {
   return { ...parsed, ...meta, parsedAt: Date.now(), text: source.slice(0, 20000) };
 }
 
+/** A backend CVResponse as the CV page's record. `provider` is "gemini" or "rules". */
+function serverCV(res, meta) {
+  return { ...res.cv, ...meta, provider: res.provider, parsedAt: Date.now(), text: (res.text || "").slice(0, 20000) };
+}
+
+/**
+ * Loads the candidate's saved CV from the backend into the profile cache (no-op without a
+ * saved CV, or in local mode). Resolves with the cached CV or null.
+ */
+export async function loadSavedCV() {
+  if (!uses("candidate") || !store?.user) return null;
+  let res;
+  try {
+    res = await request("GET", "/cv");
+  } catch (e) {
+    if (e.status === 404) return null; // nothing uploaded yet
+    throw e;
+  }
+  const id = store.user.id;
+  const before = getDb().profiles[id]?.cv;
+  const fileName = res.fileName || "";
+  const cv = serverCV(res, { fileName, fileType: fileName ? fileName.split(".").pop().toUpperCase() : "TEXT" });
+  if (before?.fileName === fileName && before.parsedAt) cv.parsedAt = before.parsedAt;
+  write((d) => { d.profiles[id] = { ...d.profiles[id], cv, skills: cv.skills, fileName }; });
+  return cv;
+}
+
+const CV_FIELDS = ["contact", "summary", "skills", "otherSkills", "education", "experience", "projects", "certifications", "experienceYears", "sectionsFound", "warnings"];
+let cvSaves = Promise.resolve();
+
+/** Saves the user's edits to their CV (PUT /cv). Saves run one after another so the last edit wins. */
+export function saveCVEdits(cv) {
+  if (!uses("candidate")) return Promise.resolve();
+  const body = Object.fromEntries(CV_FIELDS.filter((k) => cv[k] !== undefined).map((k) => [k, cv[k]]));
+  const run = () => request("PUT", "/cv", body, { timeout: AI_TIMEOUT });
+  const saved = cvSaves.then(run, run);
+  cvSaves = saved.catch(() => {});
+  return saved;
+}
+
 /** Extracts title, weighted skills, years and education from a job description. */
 export async function parseJD(text, roleSkills = []) {
-  if (uses("cv")) return request("POST", "/jd/parse", { text, roleSkills });
+  if (uses("candidate")) {
+    const skills = roleSkills.map(({ name, weight }) => ({ name, weight }));
+    return request("POST", "/jd/parse", { text, roleSkills: skills }, { timeout: AI_TIMEOUT }); // includes `provider`
+  }
   return parseJDSync(text, roleSkills);
 }
 
 /** Local parseJD without the Promise, so live previews render in the same frame. Null when the backend parses. */
 export function parseJDSync(text, roleSkills = []) {
-  return uses("cv") ? null : parseJDLocal(text, getDb().config.skills, roleSkills);
+  return uses("candidate") ? null : parseJDLocal(text, getDb().config.skills, roleSkills);
+}
+
+/**
+ * Skill gap of the saved CV against a role (`roleId`) or a parsed job description (`jd`).
+ * Resolves with { matched, partial, missing, percentage, checks } in the shape the CV page renders.
+ */
+export async function matchSkillGap({ roleId, jd }) {
+  const body = jd
+    ? { jd: { title: jd.title || "", skills: jd.skills.map(({ name, weight }) => ({ name, weight })), minYears: jd.minYears || 0, education: jd.education || "", fresherFriendly: !!jd.fresherFriendly } }
+    : { roleId };
+  const res = await request("POST", "/cv/match", body, { timeout: AI_TIMEOUT });
+  const checks = res.checks.map((c) => ({
+    label: `${c.label}: ${c.required}`,
+    ok: c.met,
+    detail: c.key === "education"
+      ? (c.actual === "Not found" ? "No degree found in your CV" : `Your highest: ${c.actual}`)
+      : `Your CV shows about ${c.actual}`,
+  }));
+  return { ...res, checks };
 }
 
 /* =========================================================
    Interview
    ========================================================= */
 
-/** Scores one answer against the admin-configured rubric. */
+/** Scores one answer against the admin-configured rubric (local mode; the backend scores inside submitAnswer). */
 export async function evaluateAnswer(answer, question) {
-  if (uses("interview")) return request("POST", "/interview/evaluate", { answer, question });
   return evaluateLocal(answer, question, getDb().config);
 }
 
-/** A candidate's sessions, newest first. In backend mode this also refreshes the cache. */
+/** A candidate's completed sessions, newest first. In backend mode this also refreshes the cache. */
 export async function getSessions(userId) {
-  if (uses("interview")) {
-    const sessions = await request("GET", `/sessions?userId=${encodeURIComponent(userId)}`);
+  if (uses("candidate")) {
+    const list = await request("GET", "/interviews");
+    const sessions = list
+      .filter((s) => s.status === "completed")
+      .map((s) => ({
+        id: s.id, userId, roleId: s.roleId, roleTitle: s.roleTitle, mode: s.mode, date: s.date, score: s.score,
+        answerCount: s.answeredCount, answers: [], // answers are fetched with getSession when a row is opened
+      }));
     write((d) => { d.sessions = [...d.sessions.filter((s) => s.userId !== userId), ...sessions]; });
-    return [...sessions].sort((a, b) => b.date - a.date);
+    return sessions.sort((a, b) => b.date - a.date);
   }
   return getDb().sessions.filter((s) => s.userId === userId).sort((a, b) => b.date - a.date);
 }
 
-/** Saves a finished session (without id). Resolves with the stored session. */
+/** One completed session with its answers (backend mode). */
+export async function getSession(id) {
+  return sessionFromServer(await request("GET", `/interviews/${encodeURIComponent(id)}`, undefined, { timeout: AI_TIMEOUT }));
+}
+
+/** Skill history, weaknesses and score trend from the backend, or null in local mode. */
+export async function getProgress() {
+  return uses("candidate") ? request("GET", "/progress") : null;
+}
+
+/** Saves a finished session (without id). Local mode only: backend sessions are saved by finishInterview. */
 export async function saveSession(session) {
-  const saved = uses("interview") ? await request("POST", "/sessions", session) : { ...session, id: session.id || uid("s") };
+  const saved = { ...session, id: session.id || uid("s") };
   write((d) => upsert(d.sessions, saved));
-  if (!uses("interview")) pushSession(saved).catch(syncFailed); // the local save already succeeded
+  pushSession(saved).catch(syncFailed); // the local save already succeeded
   return saved;
+}
+
+/* ---------- Interview, backend mode ---------- */
+
+const cleanIndicators = (ind) => {
+  const kept = Object.entries(ind || {}).filter(([, v]) => typeof v === "number" && v >= 0 && v <= 100);
+  return kept.length ? Object.fromEntries(kept) : undefined; // unavailable cues (null) are left out
+};
+
+/** Opens a session. The server picks the questions (and why) from weaknesses, CV gaps and the role. */
+export async function startInterview({ roleId, mode, count }) {
+  const res = await request("POST", "/interviews", { roleId, mode, count }, { timeout: SLOW_TIMEOUT });
+  return {
+    id: res.id,
+    questions: res.questions.map((q) => ({ id: q.id, text: q.question, skill: q.skill, type: q.type, reason: q.reason, keywords: [], followUp: null })),
+  };
+}
+
+/** The server's evaluation as the interview page's result record. */
+function answerResult(res, extra = {}) {
+  return {
+    answerId: res.answerId, score: res.score, criteria: res.criteria || {}, tips: res.tips || [], provider: res.provider,
+    needsFollowUp: !!res.needsFollowUp, followUpQuestion: res.followUp?.question || null, source: res.answerSource, ...extra,
+  };
+}
+
+/** A question the server already evaluated (e.g. the first request timed out here but finished there). */
+async function recoverAnswer(interviewId, questionId, { followUp = false } = {}) {
+  const detail = await request("GET", `/interviews/${encodeURIComponent(interviewId)}`, undefined, { timeout: AI_TIMEOUT });
+  const q = detail.questions.find((x) => x.id === questionId);
+  if (!q?.answered || (followUp && !q.followUp)) return null;
+  return answerResult(
+    { answerId: q.id, score: q.score, criteria: q.criteria, tips: q.tips, provider: q.provider, needsFollowUp: q.needsFollowUp, followUp: q.followUpQuestion ? { question: q.followUpQuestion } : null, answerSource: q.answerSource },
+    { answer: q.answer, transcript: q.answerSource === "text" ? undefined : q.answer, ...(followUp ? { followUp: q.followUp } : {}) }
+  );
+}
+
+/**
+ * Sends one answer. With `audio` ({ blob, ext }) it goes as multipart so the server transcribes it with
+ * Whisper (result.transcript is what was heard); if speech-to-text is unavailable (503) the browser
+ * transcript in `answer` is sent as text instead. Resolves with the evaluation.
+ */
+export async function submitAnswer({ interviewId, questionId, answer, indicators, mode, audio }) {
+  const path = `/interviews/${encodeURIComponent(interviewId)}/answers`;
+  const clean = cleanIndicators(indicators);
+  try {
+    if (audio) {
+      try {
+        const form = new FormData();
+        form.append("questionId", questionId);
+        form.append("audio", audio.blob, `answer.${audio.ext}`);
+        if (clean) form.append("indicators", JSON.stringify(clean));
+        const res = await request("POST", path, form, { timeout: SLOW_TIMEOUT });
+        return answerResult(res, { answer: res.transcript, transcript: res.transcript, indicators: clean });
+      } catch (e) {
+        if (e.status !== 503) throw e;
+        if (!answer.trim()) throw new ApiError("Speech-to-text isn't available right now. Type your answer instead.", 503);
+      }
+    }
+    const res = await request("POST", path, { questionId, answer, indicators: clean, source: mode }, { timeout: AI_TIMEOUT });
+    return answerResult(res, { answer, indicators: clean });
+  } catch (e) {
+    if (e.status === 409) {
+      const done = await recoverAnswer(interviewId, questionId).catch(() => null);
+      if (done) return { ...done, indicators: clean };
+    }
+    throw e;
+  }
+}
+
+/** Sends the follow-up answer; the server re-evaluates the original answer together with it. */
+export async function submitFollowUp({ interviewId, questionId, answerId, answer, indicators, audio }) {
+  const base = `/interviews/${encodeURIComponent(interviewId)}`;
+  const clean = cleanIndicators(indicators);
+  try {
+    let text = answer;
+    if (audio) {
+      const form = new FormData();
+      form.append("audio", audio.blob, `answer.${audio.ext}`);
+      try {
+        text = (await request("POST", `${base}/transcribe`, form, { timeout: SLOW_TIMEOUT })).transcript;
+      } catch (e) {
+        if (e.status !== 503) throw e;
+        if (!answer.trim()) throw new ApiError("Speech-to-text isn't available right now. Type your answer instead.", 503);
+      }
+    }
+    const res = await request("POST", `${base}/answers/${encodeURIComponent(answerId)}/follow-up`, { answer: text, indicators: clean }, { timeout: AI_TIMEOUT });
+    return answerResult(res, { followAnswer: text, indicators: clean });
+  } catch (e) {
+    if (e.status === 409) {
+      const done = await recoverAnswer(interviewId, questionId, { followUp: true }).catch(() => null);
+      if (done) return { ...done, followAnswer: done.followUp?.answer, indicators: clean };
+    }
+    throw e;
+  }
+}
+
+/** Closes the session and resolves with it in the shape the summary screen renders. */
+export async function finishInterview(interviewId) {
+  return sessionFromServer(await request("POST", `/interviews/${encodeURIComponent(interviewId)}/finish`, undefined, { timeout: AI_TIMEOUT }));
+}
+
+function sessionFromServer(s) {
+  const answers = s.questions.filter((q) => q.answered);
+  return {
+    id: s.id, userId: store?.user?.id, roleId: s.roleId, roleTitle: s.roleTitle, mode: s.mode, date: s.date, score: s.score,
+    answerCount: answers.length,
+    answers: answers.map((q) => ({
+      questionId: q.templateId, question: q.question, skill: q.skill, type: q.type, score: q.score, criteria: q.criteria || {},
+      answer: q.answer, followUp: q.followUp || null, indicators: q.indicators || null, reason: q.reason, provider: q.provider,
+    })),
+  };
 }
 
 /* =========================================================
@@ -329,7 +530,8 @@ export async function saveSession(session) {
  * the suitability score reads: skills, three CV facts, the sharing switch and per-answer
  * scores. CV text, contact details and answer text never leave the browser. */
 
-const syncsCandidate = () => uses("employer") && store?.user?.role === "candidate";
+// The backend's candidate module saves CV and sessions itself, so this copy is only for the employer-only setup.
+const syncsCandidate = () => uses("employer") && !uses("candidate") && store?.user?.role === "candidate";
 const syncFailed = (e) => console.warn("Couldn't sync with the server:", e.message);
 const clip = (value) => String(value ?? "").slice(0, 200);
 const score100 = (n) => Math.min(100, Math.max(0, Math.round(Number(n) || 0)));
@@ -358,7 +560,7 @@ let profileTimer = null;
  */
 export async function syncProfile(profile) {
   clearTimeout(profileTimer);
-  if (!syncsCandidate()) return;
+  if (!uses("employer") || store?.user?.role !== "candidate") return; // also the sharing switch with the candidate module on
   await request("PUT", "/profile", profileBody(profile));
 }
 

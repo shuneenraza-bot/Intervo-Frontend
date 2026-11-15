@@ -1,6 +1,6 @@
 # Intervo REST API
 
-The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) for each module listed in `VITE_BACKEND_MODULES` (`auth`, `employer`; see the README). The other functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
+The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) for each module listed in `VITE_BACKEND_MODULES` (`auth`, `employer`, `candidate`; see the README and the backend's `/docs` for the `candidate` endpoints). The other functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
 
 ## Conventions
 
@@ -310,7 +310,7 @@ Suitability {
 
 ## Not covered yet
 
-These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (`/cv/*`, `/jd/parse`, `/interview/evaluate` and `GET /sessions` above are also not built yet):
+These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (the `candidate` module now covers CV, JD and interviews on the backend; `/interview/evaluate` and `GET /sessions` above are only used in local mode):
 
 - Admin configuration: domains, roles, skills, questions, criteria, rules (`AdminApp.jsx`). The local evaluator and parsers read these.
 - Profile edits: name, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).

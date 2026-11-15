@@ -1,4 +1,5 @@
 import { useState } from "react";
+import * as api from "./api";
 import { Icon } from "./Icons";
 import { average, formatDate, plural, scoreTone } from "./lib";
 import { Card, Empty, LineChart, Meter, PageHeader, Sparkline, Stat } from "./ui";
@@ -6,6 +7,17 @@ import { Card, Empty, LineChart, Meter, PageHeader, Sparkline, Stat } from "./ui
 export default function ProgressPage({ db, sessions, performance, go }) {
   const { rules, skills, criteria } = db.config;
   const [openId, setOpenId] = useState(null);
+  const [details, setDetails] = useState({}); // backend mode: session id -> answers, loaded when a row is opened
+  const [detailError, setDetailError] = useState("");
+
+  function toggle(s, open) {
+    setOpenId(open ? null : s.id);
+    setDetailError("");
+    if (open || !api.uses("candidate") || details[s.id]) return;
+    api.getSession(s.id)
+      .then((full) => setDetails((d) => ({ ...d, [s.id]: full.answers })))
+      .catch((e) => setDetailError(e.message));
+  }
   const scores = sessions.map((s) => s.score);
   const weak = performance.filter((p) => p.weak);
   const improved = performance.filter((p) => p.scores.length > 1).sort((a, b) => b.trend - a.trend)[0];
@@ -84,18 +96,19 @@ export default function ProgressPage({ db, sessions, performance, go }) {
               const open = openId === s.id;
               return (
                 <li key={s.id} className={open ? "is-open" : ""}>
-                  <button className="history__row" onClick={() => setOpenId(open ? null : s.id)} aria-expanded={open}>
+                  <button className="history__row" onClick={() => toggle(s, open)} aria-expanded={open}>
                     <span className="session-list__icon"><Icon name={s.mode === "video" ? "video" : s.mode === "voice" ? "mic" : "message"} size={16} /></span>
                     <div>
                       <strong>{s.roleTitle}</strong>
-                      <span>{formatDate(s.date)} · {plural(s.answers.length, "question")} · {s.mode} mode</span>
+                      <span>{formatDate(s.date)} · {plural(s.answerCount ?? s.answers.length, "question")} · {s.mode} mode</span>
                     </div>
                     <span className={`pill pill--${scoreTone(s.score, rules.weakThreshold)}`}>{s.score}%</span>
                     <Icon name="chevronRight" size={16} className="history__chev" />
                   </button>
                   {open && (
                     <div className="history__detail">
-                      {s.answers.map((a, i) => (
+                      {!(details[s.id] || s.answers).length && <p className="field__hint">{detailError || "Loading answers…"}</p>}
+                      {(details[s.id] || s.answers).map((a, i) => (
                         <div key={i} className="history__answer">
                           <div className="history__answer-main">
                             <div className="chips"><span className="chip">{a.skill}</span>{a.followUp && <span className="chip chip--fair">Follow-up</span>}</div>

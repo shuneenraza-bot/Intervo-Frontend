@@ -170,7 +170,7 @@ These are stated plainly so the evaluation reflects what is really built.
 Two settings in `.env` control where each module runs. Restart `npm run dev` after changing them.
 
 ```
-VITE_BACKEND_MODULES=auth,employer
+VITE_BACKEND_MODULES=auth,employer,candidate
 VITE_API_URL=http://localhost:8000/api
 ```
 
@@ -183,12 +183,14 @@ VITE_API_URL=http://localhost:8000/api
 |---|---|
 | `auth` | Account lookup, sign up, sign in (password or Face ID), Face ID enrol/delete, current user. The JWT is stored in the browser; a `401` signs the user out. |
 | `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking. Also copies the candidate's skills, CV summary and session scores to the server. Needs `auth`. |
+| `candidate` | CV upload and edits (`/cv`), job-description parsing and skill-gap match (`/jd/parse`, `/cv/match`), the mock interview (`/interviews`: server-chosen questions, Gemini or rule-based scoring, Whisper transcription of voice and video answers, follow-ups, finish), and progress. With it on, the profile and session copy described for `employer` is no longer sent. Needs `auth`. |
 
 How the two sides fit together:
 
 - After a backend sign-in or sign-up, the returned user is copied into the local store under the same id, so the candidate pages that still read the local store keep working.
 - With `employer` on, the candidate's **Job Matches** page lists jobs from the backend and applies or withdraws through it, so employers see real applicants.
 - The suitability score is calculated by the backend from its database. When a candidate finishes a session, edits their CV skills or applies, the frontend sends the skills, CV summary and per-answer scores. CV text, contact details and answer text are not sent.
+- With `candidate` on, a slow or failed AI call shows a friendly message after about 30 seconds with a **Try again** button. If speech-to-text is unavailable on the server (503), the browser's live transcript is sent as text instead.
 - If the backend is not running, the app shows "Can't reach the server — is the backend running?" instead of failing.
 
 API docs are at http://localhost:8000/docs and the contract is in [API.md](API.md).

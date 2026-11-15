@@ -118,7 +118,7 @@ export default function Overview({ user, db, sessions, profile, applications, pe
                 <span className="session-list__icon"><Icon name={s.mode === "video" ? "video" : s.mode === "voice" ? "mic" : "message"} size={16} /></span>
                 <div>
                   <strong>{s.roleTitle}</strong>
-                  <span>{formatDate(s.date)} · {plural(s.answers.length, "question")} · {s.mode} mode</span>
+                  <span>{formatDate(s.date)} · {plural(s.answerCount ?? s.answers.length, "question")} · {s.mode} mode</span>
                 </div>
                 <span className={`pill pill--${scoreTone(s.score, rules.weakThreshold)}`}>{s.score}%</span>
               </li>

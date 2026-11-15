@@ -3,7 +3,7 @@ import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { average, frameToTemplate, motionBetween, plural, scoreTone, selectQuestions, wordCount } from "./lib";
 import * as api from "./api";
-import { Card, Meter, Note, PageHeader, ScoreRing, Segmented } from "./ui";
+import { Card, Meter, Note, PageHeader, ProviderBadge, ScoreRing, Segmented } from "./ui";
 import { useCamera } from "./Camera";
 import { useSpeech } from "./useSpeech";
 
@@ -30,6 +30,10 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
   const [planSeed, setPlanSeed] = useState(0);
   const [results, setResults] = useState([]);
   const [saved, setSaved] = useState(null);
+  const remote = api.uses("candidate"); // the server picks the questions and evaluates the answers
+  const [interviewId, setInterviewId] = useState(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState("");
 
   const role = config.roles.find((r) => r.id === roleId) || config.roles[0];
   const missing = useMemo(() => (gap ? [...gap.missing, ...(gap.partial || [])].map((s) => s.name) : []), [gap]);
@@ -41,13 +45,38 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
   );
   const [questions, setQuestions] = useState([]);
 
-  function begin() {
-    setQuestions(plan);
-    setResults([]);
-    setStage("live");
+  async function begin() {
+    if (!remote) {
+      setQuestions(plan);
+      setResults([]);
+      return setStage("live");
+    }
+    setStarting(true);
+    setStartError("");
+    try {
+      const started = await api.startInterview({ roleId: role.id, mode, count });
+      setInterviewId(started.id);
+      setQuestions(started.questions);
+      setResults([]);
+      setStage("live");
+    } catch (e) {
+      setStartError(e.message);
+    } finally {
+      setStarting(false);
+    }
   }
 
   async function finish(all) {
+    if (remote) {
+      try {
+        setSaved(await api.finishInterview(interviewId));
+        setStage("summary");
+        notify("Session saved to your skill history");
+      } catch (e) {
+        notify(e.message, "bad");
+      }
+      return;
+    }
     const session = {
       userId: user.id, roleId: role.id, roleTitle: role.title, mode, date: Date.now(),
       score: average(all.map((r) => r.score)),
@@ -95,11 +124,14 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
                 <label>Number of questions</label>
                 <Segmented options={[3, 4, 5, 6].map((n) => ({ value: n, label: `${n}` }))} value={count} onChange={setCount} />
               </div>
-              <button className="btn btn--primary btn--lg" onClick={begin}>Begin interview <Icon name="arrowRight" size={17} /></button>
+              <button className="btn btn--primary btn--lg" onClick={begin} disabled={starting}>
+                {starting ? <><span className="spinner" /> Preparing your questions…</> : <>Begin interview <Icon name="arrowRight" size={17} /></>}
+              </button>
+              {startError && <p className="form__error"><Icon name="alert" size={15} /> {startError}</p>}
             </div>
           </Card>
 
-          <Card title="Your session plan" subtitle="Why each question was picked" action={<button className="btn btn--text" onClick={() => setPlanSeed((s) => s + 1)}><Icon name="refresh" size={14} /> Shuffle</button>}>
+          <Card title="Your session plan" subtitle="Why each question was picked" action={remote ? null : <button className="btn btn--text" onClick={() => setPlanSeed((s) => s + 1)}><Icon name="refresh" size={14} /> Shuffle</button>}>
             <ol className="plan">
               {plan.map((q, i) => {
                 const r = REASON[q.reason];
@@ -115,7 +147,9 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
                 );
               })}
             </ol>
-            <Note>Weak skills come from your history (below {config.rules.weakThreshold}% in {config.rules.weakMinSessions}+ sessions). CV gaps come from your latest skill-gap analysis.</Note>
+            <Note>{remote
+              ? "A preview from your saved history. The server picks the final questions when you begin, from your weak skills, CV gaps and the role's key skills."
+              : `Weak skills come from your history (below ${config.rules.weakThreshold}% in ${config.rules.weakMinSessions}+ sessions). CV gaps come from your latest skill-gap analysis.`}</Note>
           </Card>
         </div>
       </>
@@ -170,6 +204,8 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
       key={questions.map((q) => q.id).join()}
       role={role}
       mode={mode}
+      remote={remote}
+      interviewId={interviewId}
       questions={questions}
       config={config}
       results={results}
@@ -184,13 +220,16 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
    Live interview: question → answer → evaluation → optional follow-up
    ========================================================= */
 
-function LiveInterview({ role, mode, questions, config, results, setResults, onFinish, onExit }) {
+function LiveInterview({ role, mode, remote, interviewId, questions, config, results, setResults, onFinish, onExit }) {
   const [index, setIndex] = useState(0);
   const [phase, setPhase] = useState("answer"); // answer | feedback | followup
   const [answer, setAnswer] = useState("");
   const [followAnswer, setFollowAnswer] = useState("");
   const [error, setError] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const [evaluating, setEvaluating] = useState(false); // waiting for the server's evaluation
+  const [finishing, setFinishing] = useState(false);
+  const [retryable, setRetryable] = useState(false); // the last error was a timeout or the server being offline
   const q = questions[index];
   const current = results[index];
   const usesVoice = mode !== "text";
@@ -203,6 +242,9 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
     else setAnswer(add);
   }, [isFollow]);
   const speech = useSpeech({ onFinal: append });
+  // The audio itself goes to the server (Whisper) in backend mode; the browser transcript is the live preview and the fallback.
+  const recorder = useRecorder(remote && usesVoice);
+  const live = speech.listening || recorder.recording;
 
   /* Video: camera preview + presentation cues sampled every 500ms while recording */
   const cam = useCamera(mode === "video");
@@ -213,7 +255,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
 
   /* Face cues: ~5 frames per second through MediaPipe, when the model loaded */
   useEffect(() => {
-    if (mode !== "video" || !speech.listening || face.status !== "ready") return;
+    if (mode !== "video" || !live || face.status !== "ready") return;
     const t = setInterval(() => {
       const video = cam.videoRef.current;
       if (!video || video.readyState < 2) return;
@@ -224,9 +266,9 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
       }
     }, 200);
     return () => clearInterval(t);
-  }, [mode, speech.listening, cam.videoRef, face]);
+  }, [mode, live, cam.videoRef, face]);
   useEffect(() => {
-    if (mode !== "video" || !speech.listening) return;
+    if (mode !== "video" || !live) return;
     const prev = { raw: null };
     const t = setInterval(() => {
       const video = cam.videoRef.current;
@@ -237,7 +279,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
       prev.raw = f.raw;
     }, 500);
     return () => clearInterval(t);
-  }, [mode, speech.listening, cam.videoRef]);
+  }, [mode, live, cam.videoRef]);
 
   /* Answer timer */
   useEffect(() => {
@@ -249,51 +291,103 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
   const text = isFollow ? followAnswer : answer;
   const words = wordCount(text);
 
-  const evaluating = useRef(false);
+  const busy = useRef(false);
+  const startTalking = () => { speech.start(); recorder.start(); };
+  const stopTalking = () => { speech.stop(); recorder.pause(); };
+
   async function submit(e) {
     e?.preventDefault();
-    if (evaluating.current) return;
-    speech.stop();
-    if (words < 12) return setError(usesVoice ? "We need a little more — record at least two or three sentences." : "Write at least two or three sentences so the answer can be evaluated.");
-    setError("");
-    const indicators = mode === "video" ? summariseIndicators(samples.current, face.status === "ready" ? face.cues.summariseFace(faceSamples.current) : null) : null;
-    evaluating.current = true;
+    if (busy.current) return;
+    busy.current = true;
+    stopTalking();
     try {
-      if (isFollow) {
-        // Re-evaluate the original answer together with the follow-up.
-        const combined = `${answer.trim()} ${followAnswer.trim()}`;
-        const ev = await api.evaluateAnswer(combined, q);
-        setResults((r) => {
-          const next = [...r];
-          next[index] = { ...next[index], ...ev, answer: combined, followUp: { question: q.followUp, answer: followAnswer, before: next[index].score }, indicators: indicators || next[index].indicators, needsFollowUp: false };
-          return next;
-        });
-      } else {
-        const ev = await api.evaluateAnswer(answer, q);
-        setResults((r) => {
-          const next = [...r];
-          next[index] = { ...ev, answer, questionId: q.id, question: q.text, skill: q.skill, type: q.type, reason: q.reason, indicators };
-          return next;
-        });
+      const audio = remote && usesVoice ? await recorder.finish() : null; // kept for a retry after a failure
+      // With audio the server transcribes it (and rejects silence), so the browser preview may be empty.
+      if (words < 12 && !audio) return setError(usesVoice ? "We need a little more — record at least two or three sentences." : "Write at least two or three sentences so the answer can be evaluated.");
+      setError("");
+      setRetryable(false);
+      const indicators = mode === "video" ? summariseIndicators(samples.current, face.status === "ready" ? face.cues.summariseFace(faceSamples.current) : null) : null;
+      setEvaluating(true);
+      try {
+        if (remote) await submitRemote(audio, indicators);
+        else await submitLocal(indicators);
+      } catch (err) {
+        setRetryable(!!err.retryable);
+        return setError(err.message);
+      } finally {
+        setEvaluating(false);
       }
-    } catch (err) {
-      return setError(err.message);
+      recorder.reset();
+      samples.current = [];
+      faceSamples.current = [];
+      setPhase("feedback");
     } finally {
-      evaluating.current = false;
+      busy.current = false;
     }
-    samples.current = [];
-    faceSamples.current = [];
-    setPhase("feedback");
   }
 
-  function next() {
+  async function submitLocal(indicators) {
+    if (isFollow) {
+      // Re-evaluate the original answer together with the follow-up.
+      const combined = `${answer.trim()} ${followAnswer.trim()}`;
+      const ev = await api.evaluateAnswer(combined, q);
+      setResults((r) => {
+        const next = [...r];
+        next[index] = { ...next[index], ...ev, answer: combined, followUp: { question: q.followUp, answer: followAnswer, before: next[index].score }, indicators: indicators || next[index].indicators, needsFollowUp: false };
+        return next;
+      });
+    } else {
+      const ev = await api.evaluateAnswer(answer, q);
+      setResults((r) => {
+        const next = [...r];
+        next[index] = { ...ev, answer, questionId: q.id, question: q.text, skill: q.skill, type: q.type, reason: q.reason, indicators };
+        return next;
+      });
+    }
+  }
+
+  async function submitRemote(audio, indicators) {
+    if (isFollow) {
+      const ev = await api.submitFollowUp({ interviewId, questionId: q.id, answerId: current.answerId, answer: followAnswer, indicators, audio });
+      if (ev.followAnswer) setFollowAnswer(ev.followAnswer); // what Whisper heard
+      setResults((r) => {
+        const next = [...r];
+        const before = next[index];
+        next[index] = {
+          ...before, ...ev, followUpQuestion: before.followUpQuestion, needsFollowUp: false, indicators: indicators || before.indicators,
+          followUp: ev.followUp || { question: before.followUpQuestion, answer: ev.followAnswer, before: before.score },
+          words: wordCount(`${before.answer} ${ev.followAnswer}`), transcript: ev.followAnswer && audio ? ev.followAnswer : before.transcript,
+        };
+        return next;
+      });
+    } else {
+      const ev = await api.submitAnswer({ interviewId, questionId: q.id, answer, indicators, mode, audio });
+      if (ev.transcript) setAnswer(ev.transcript); // what Whisper heard, in the answer box
+      setResults((r) => {
+        const next = [...r];
+        next[index] = { ...ev, words: wordCount(ev.answer || answer), questionId: q.id, question: q.text, skill: q.skill, type: q.type, reason: q.reason, indicators };
+        return next;
+      });
+    }
+  }
+
+  async function next() {
     if (index + 1 < questions.length) {
+      recorder.reset();
       setIndex((i) => i + 1);
       setAnswer("");
       setFollowAnswer("");
       setElapsed(0);
+      setError("");
       setPhase("answer");
-    } else onFinish(results);
+    } else {
+      setFinishing(true);
+      try {
+        await onFinish(results);
+      } finally {
+        setFinishing(false);
+      }
+    }
   }
 
   const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
@@ -304,7 +398,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
       <PageHeader
         kicker={`${role.title} · ${mode} mode`}
         title="Mock interview"
-        actions={<button className="btn btn--ghost" onClick={() => { speech.stop(); onExit(); }}><Icon name="x" size={15} /> End session</button>}
+        actions={<button className="btn btn--ghost" onClick={() => { stopTalking(); recorder.reset(); onExit(); }}><Icon name="x" size={15} /> End session</button>}
       />
       <div className="grid grid--interview">
         <Card className="live">
@@ -329,7 +423,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
           {isFollow && (
             <div className="followup-q">
               <span className="followup-q__label"><Icon name="message" size={14} /> Follow-up question</span>
-              <p>{q.followUp}</p>
+              <p>{current?.followUpQuestion ?? q.followUp}</p>
             </div>
           )}
 
@@ -338,7 +432,7 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
               <video ref={cam.videoRef} muted playsInline className={cam.status === "ready" ? "" : "is-hidden"} />
               <canvas ref={canvasRef} hidden />
               {cam.status !== "ready" && <div className="video-box__msg"><Icon name="camera" size={22} /> {cam.status === "denied" ? "Camera permission denied — you can still answer by voice." : cam.status === "unavailable" ? "No camera found — continue with voice." : "Starting camera…"}</div>}
-              {speech.listening && <span className="video-box__rec"><i /> REC {mm}:{ss}</span>}
+              {live && <span className="video-box__rec"><i /> REC {mm}:{ss}</span>}
               {cam.status === "ready" && <span className="video-box__face">{face.status === "loading" ? "Loading face cues…" : face.status === "ready" ? "Face cues on" : "Eye contact unavailable"}</span>}
             </div>
           )}
@@ -346,15 +440,15 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
           {phase !== "feedback" ? (
             <form className="form" onSubmit={submit}>
               {usesVoice && (
-                <div className={`voice ${speech.listening ? "is-live" : ""}`}>
-                  <button type="button" className="voice__btn" onClick={speech.listening ? speech.stop : speech.start} aria-label={speech.listening ? "Stop recording" : "Start recording"}>
-                    <Icon name={speech.listening ? "stop" : "mic"} size={20} filled={speech.listening} />
+                <div className={`voice ${live ? "is-live" : ""}`}>
+                  <button type="button" className="voice__btn" onClick={live ? stopTalking : startTalking} disabled={evaluating} aria-label={live ? "Stop recording" : "Start recording"}>
+                    <Icon name={live ? "stop" : "mic"} size={20} filled={live} />
                   </button>
                   <div className="voice__text">
-                    <strong>{speech.listening ? "Listening… speak naturally" : "Tap to start speaking"}</strong>
-                    <span>{speech.interim || (speech.listening ? "Your words will appear below." : "Your speech is transcribed into the answer box. You can edit it before submitting.")}</span>
+                    <strong>{live ? "Listening… speak naturally" : "Tap to start speaking"}</strong>
+                    <span>{speech.interim || (live ? "Your words will appear below." : "Your speech is transcribed into the answer box. You can edit it before submitting.")}</span>
                   </div>
-                  {speech.listening && <div className="voice__wave" aria-hidden="true">{[...Array(5)].map((_, i) => <i key={i} />)}</div>}
+                  {live && <div className="voice__wave" aria-hidden="true">{[...Array(5)].map((_, i) => <i key={i} />)}</div>}
                 </div>
               )}
               {speech.error && <p className="form__error"><Icon name="alert" size={15} /> {speech.error}</p>}
@@ -369,9 +463,16 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
               </div>
               <div className="answer-bar">
                 <span className={`word-count ${words >= 60 ? "is-good" : ""}`}>{plural(words, "word")} <small>· aim for 60–150</small></span>
-                <button className="btn btn--primary" type="submit">{isFollow ? "Submit follow-up" : "Submit answer"} <Icon name="arrowRight" size={16} /></button>
+                <button className="btn btn--primary" type="submit" disabled={evaluating}>
+                  {evaluating ? <><span className="spinner" /> Evaluating your answer…</> : <>{isFollow ? "Submit follow-up" : "Submit answer"} <Icon name="arrowRight" size={16} /></>}
+                </button>
               </div>
-              {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
+              {error && (
+                <p className="form__error">
+                  <Icon name="alert" size={15} /> {error}
+                  {retryable && <> <button type="button" className="btn btn--ghost btn--sm" onClick={submit} disabled={evaluating}><Icon name="refresh" size={14} /> Try again</button></>}
+                </p>
+              )}
             </form>
           ) : (
             <Feedback
@@ -379,8 +480,10 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
               config={config}
               question={q}
               onFollowUp={() => { setPhase("followup"); setElapsed(0); }}
-              onRetry={() => { setResults((r) => r.slice(0, index)); setPhase("answer"); }}
+              onRetry={remote ? null : () => { setResults((r) => r.slice(0, index)); setPhase("answer"); }}
               onNext={next}
+              busy={finishing}
+              remote={remote}
               isLast={index + 1 === questions.length}
             />
           )}
@@ -416,9 +519,9 @@ function LiveInterview({ role, mode, questions, config, results, setResults, onF
   );
 }
 
-function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLast }) {
+function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLast, busy = false, remote = false }) {
   const applicable = config.criteria.filter((c) => result.criteria[c.key] !== undefined);
-  const askFollow = result.needsFollowUp && !result.followUp && question.followUp;
+  const askFollow = result.needsFollowUp && !result.followUp && (result.followUpQuestion ?? question.followUp);
   return (
     <div className="feedback">
       <div className="feedback__head">
@@ -427,9 +530,10 @@ function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLas
           <strong>{result.followUp ? "Answer re-evaluated with follow-up" : "Answer evaluated"}</strong>
           <p>
             {plural(result.words, "word")}
-            {question.type === "behavioral" ? ` · STAR parts ${result.starParts.length}/4` : ` · key points ${result.keyHits.length}/${question.keywords?.length || 0}`}
+            {result.starParts && (question.type === "behavioral" ? ` · STAR parts ${result.starParts.length}/4` : ` · key points ${result.keyHits.length}/${question.keywords?.length || 0}`)}
             {result.followUp && ` · was ${result.followUp.before}%`}
           </p>
+          {result.provider && <ProviderBadge provider={result.provider} verb="Evaluated" />}
         </div>
       </div>
       <div className="criteria">
@@ -441,6 +545,12 @@ function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLas
           </div>
         ))}
       </div>
+      {result.transcript && (
+        <div className="tips">
+          <span className="tips__title"><Icon name="mic" size={14} /> Transcript</span>
+          <p>{result.transcript}</p>
+        </div>
+      )}
       {result.indicators && <IndicatorCard indicators={result.indicators} compact />}
       <div className="tips">
         <span className="tips__title"><Icon name="sparkle" size={14} /> Suggestions</span>
@@ -454,12 +564,88 @@ function Feedback({ result, config, question, onFollowUp, onRetry, onNext, isLas
         </div>
       )}
       <div className="feedback__actions">
-        <button className="btn btn--ghost" onClick={onRetry}><Icon name="refresh" size={15} /> Retry question</button>
-        <button className={`btn ${askFollow ? "btn--ghost" : "btn--primary"}`} onClick={onNext}>{isLast ? "Finish session" : askFollow ? "Skip follow-up" : "Next question"} <Icon name="arrowRight" size={16} /></button>
+        {onRetry && <button className="btn btn--ghost" onClick={onRetry}><Icon name="refresh" size={15} /> Retry question</button>}
+        <button className={`btn ${askFollow ? "btn--ghost" : "btn--primary"}`} onClick={onNext} disabled={busy}>
+          {busy ? <><span className="spinner" /> Saving…</> : <>{isLast ? "Finish session" : askFollow ? "Skip follow-up" : "Next question"} <Icon name="arrowRight" size={16} /></>}
+        </button>
       </div>
-      <Note>Prototype rule-based rubric. The Gemini evaluator with JSON validation replaces it on the backend; scores are assistive, not ground truth.</Note>
+      <Note>{remote
+        ? "Scored on the server: each criterion is rated (by Gemini when available), and the overall score is calculated with your admin-set weights. Scores are assistive, not ground truth."
+        : "Prototype rule-based rubric. The Gemini evaluator with JSON validation replaces it on the backend; scores are assistive, not ground truth."}</Note>
     </div>
   );
+}
+
+/* ---------- Audio recording (sent to the server for Whisper) ---------- */
+
+const AUDIO_EXT = [["webm", "webm"], ["ogg", "ogg"], ["mp4", "m4a"], ["wav", "wav"], ["mpeg", "mp3"]];
+
+/**
+ * Records the microphone with MediaRecorder while the candidate answers. start/pause toggle one
+ * continuous recording per answer; finish() stops it and resolves with { blob, ext } (the same
+ * result again if asked twice, so a failed submit can be retried); reset() throws it away.
+ */
+function useRecorder(enabled) {
+  const recRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunks = useRef([]);
+  const final = useRef(null);
+  const [recording, setRecording] = useState(false);
+
+  const release = useCallback(() => {
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
+    recRef.current = null;
+    chunks.current = [];
+    setRecording(false);
+  }, []);
+  const reset = useCallback(() => { final.current = null; release(); }, [release]);
+
+  const start = useCallback(async () => {
+    if (!enabled || typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+    try {
+      final.current = null; // recording again replaces an earlier take
+      if (recRef.current?.state === "paused") {
+        recRef.current.resume();
+        return setRecording(true);
+      }
+      if (recRef.current) return;
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const rec = new MediaRecorder(stream);
+      chunks.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size) chunks.current.push(e.data); };
+      rec.start();
+      streamRef.current = stream;
+      recRef.current = rec;
+      setRecording(true);
+    } catch {
+      /* no microphone access: the live browser transcript is still used */
+    }
+  }, [enabled]);
+
+  const pause = useCallback(() => {
+    if (recRef.current?.state === "recording") recRef.current.pause();
+    setRecording(false);
+  }, []);
+
+  const finish = useCallback(() => new Promise((resolve) => {
+    if (final.current) return resolve(final.current);
+    const rec = recRef.current;
+    if (!rec) return resolve(null);
+    const done = () => {
+      const type = rec.mimeType || "audio/webm";
+      const blob = new Blob(chunks.current, { type });
+      final.current = blob.size ? { blob, ext: (AUDIO_EXT.find(([k]) => type.includes(k)) || ["", "webm"])[1] } : null;
+      release();
+      resolve(final.current);
+    };
+    if (rec.state === "inactive") return done();
+    rec.onstop = done;
+    rec.stop();
+  }), [release]);
+
+  useEffect(() => release, [release]);
+  return { recording, start, pause, finish, reset };
 }
 
 /* ---------- Video presentation indicators ---------- */
