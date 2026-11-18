@@ -10,7 +10,7 @@ import { FaceCapture } from "./Camera";
 
 const ROLE_COPY = {
   candidate: { label: "Candidate", icon: "user", text: "Practise interviews, close skill gaps and track progress." },
-  employer: { label: "Employer", icon: "building", text: "Post jobs and review explainable candidate suitability." },
+  employer: { label: "Employer", icon: "building", text: "Post jobs and rank candidates by how well their CV matches the skills you need." },
   admin: { label: "Admin", icon: "settings", text: "Configure domains, roles, skills and evaluation criteria." },
 };
 
@@ -459,19 +459,19 @@ export const SHOWCASE = {
   },
   employer: {
     pill: "For hiring teams",
-    title: ["Shortlist with evidence,", "not guesswork."],
-    text: "See how opted-in candidates perform on the skills your role needs — with every score explained.",
-    card: "Candidate fit · Junior Frontend Developer",
+    title: ["Shortlist on skills,", "not guesswork."],
+    text: "See how well opted-in candidates' CVs match the skills your role needs — matched, partial and missing, all explained.",
+    card: "CV skill match · Junior Frontend Developer",
     chip: today,
-    ring: { value: 78, label: "Suitability" },
+    ring: { value: 83, label: "CV match" },
     delta: { icon: "checkCircle", text: "Meets criteria" },
     rows: [
-      { name: "CV skill match", value: 83 },
-      { name: "Interview evidence", value: 79 },
-      { name: "Practice consistency", value: 62 },
+      { name: "Matched skills", value: 83 },
+      { name: "Partial skills", value: 10 },
+      { name: "Missing skills", value: 7 },
     ],
     foot: "Final hiring decisions always stay with your team.",
-    features: [["sliders", "Weighted job skills"], ["chart", "Explainable scores"], ["shield", "Consent-based sharing"]],
+    features: [["sliders", "Weighted job skills"], ["chart", "Explainable CV match"], ["shield", "Consent-based sharing"]],
   },
   admin: {
     pill: "Platform configuration",

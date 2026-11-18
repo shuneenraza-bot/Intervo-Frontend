@@ -75,8 +75,8 @@ const STEPS = [
 
 const EMPLOYER_POINTS = [
   { icon: "sliders", title: "Weighted job skills", text: "Decide which skills matter most for the role, and by how much." },
-  { icon: "chart", title: "Explainable suitability score", text: "Every score breaks down into CV match, interview evidence and practice consistency." },
-  { icon: "users", title: "Candidates who opt in only", text: "You only see candidates who chose to share their results with employers." },
+  { icon: "chart", title: "Explainable CV skill match", text: "See which required skills each CV matches, partly matches or misses, with the weights you set." },
+  { icon: "users", title: "Candidates who opt in only", text: "You only see candidates who chose to share their CV match with employers. Interview results always stay private." },
   { icon: "checkCircle", title: "The final decision stays with you", text: "Intervo informs your shortlist. It never rejects or hires anyone." },
 ];
 

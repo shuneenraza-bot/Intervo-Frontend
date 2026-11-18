@@ -80,8 +80,8 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
             </form>
           </Card>
 
-          <Card title="Employer visibility" subtitle="Candidate-consented evidence only">
-            <Switch checked={profile.shareWithEmployers !== false} onChange={setShare} label="Share results with employers I apply to" description="Turning this off hides your suitability evidence from every employer at once." />
+          <Card title="Employer visibility" subtitle="Your CV skill match only, and only with your consent">
+            <Switch checked={profile.shareWithEmployers !== false} onChange={setShare} label="Share my CV match with employers I apply to" description="Turning this off hides your CV match from every employer at once. Interview results are never shared." />
             <div className="consent-list">
               <span className="field__hint">Per application</span>
               {applications.length ? applications.map((a) => {

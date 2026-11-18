@@ -1,7 +1,7 @@
 /*
  * Business logic for the prototype. Every function is pure and deterministic
  * (apart from question shuffling), so each one maps cleanly onto a FastAPI
- * service later: matching, evaluation, weakness detection, suitability scoring.
+ * service later: matching, evaluation, weakness detection, CV match.
  */
 
 /* ---------- Utilities ---------- */
@@ -212,40 +212,16 @@ export function selectQuestions({ role, performance, missingSkills = [], questio
   return picked.map((q) => ({ ...q, reason: reason(q) }));
 }
 
-/* ---------- Employer: transparent suitability score ---------- */
+/* ---------- Employer: CV skill match only ---------- */
 
 /**
- * Weighted suitability = CV skill match + interview evidence on the job's skills
- * + practice consistency. Returns every factor so the employer sees why.
+ * What an employer sees about one applicant: the weighted CV skill match (matched / partial /
+ * missing with weights, percentage) and whether the job's minimum CV match is met.
+ * Interview scores and practice history are never part of it.
  */
-export function suitability({ job, profile, sessions, config }) {
-  const { rules, skills } = config;
-  const w = rules.suitability;
-  const cv = matchSkills(profile?.skills ?? [], job.skills, skills);
-  const perf = skillPerformance(sessions, rules);
-
-  const evidence = job.skills.map((js) => ({ ...js, perf: perf.find((p) => p.skill === js.name) }));
-  const withData = evidence.filter((e) => e.perf);
-  const evW = withData.reduce((s, e) => s + e.weight, 0);
-  const interview = evW ? Math.round(withData.reduce((s, e) => s + e.perf.avg * e.weight, 0) / evW) : 0;
-  const coverage = job.skills.length ? Math.round((withData.length / job.skills.length) * 100) : 0;
-
-  const trend = perf.length ? average(perf.map((p) => p.trend)) : 0;
-  const consistency = sessions.length ? clamp(Math.round(40 + sessions.length * 12 + trend), 0, 100) : 0;
-
-  const total = Math.round((cv.percentage * w.cv + interview * w.interview + consistency * w.consistency) / (w.cv + w.interview + w.consistency));
-  const avgScore = average(sessions.map((s) => s.score));
-  return {
-    total,
-    factors: [
-      { key: "cv", label: "CV skill match", value: cv.percentage, weight: w.cv, detail: `${cv.matched.length} matched, ${cv.partial.length} partial, ${cv.missing.length} missing` },
-      { key: "interview", label: "Interview evidence", value: interview, weight: w.interview, detail: withData.length ? `Scored on ${withData.length} of ${job.skills.length} required skills (${coverage}% coverage)` : "No interview answers on this job's skills yet" },
-      { key: "consistency", label: "Practice consistency", value: consistency, weight: w.consistency, detail: `${plural(sessions.length, "session")}, average trend ${trend >= 0 ? "+" : ""}${trend}` },
-    ],
-    cv, evidence, avgScore,
-    meetsCriteria: avgScore >= (job.success?.minScore ?? 0) && cv.percentage >= (job.success?.minMatch ?? 0),
-    weak: perf.filter((p) => p.weak).map((p) => p.skill),
-  };
+export function cvFit({ job, profile, config, checks = [] }) {
+  const cv = matchSkills(profile?.skills ?? [], job.skills, config.skills);
+  return { ...cv, checks, meetsCriteria: cv.percentage >= (job.success?.minMatch ?? 0) };
 }
 
 /* ---------- Face template ----------

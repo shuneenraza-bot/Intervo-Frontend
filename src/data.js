@@ -91,7 +91,6 @@ const rules = {
   followUpBelow: 55, // completeness below this triggers a follow-up question
   defaultQuestions: 5,
   faceThreshold: 0.55, // minimum face-template similarity (0–1) to accept a sign-in
-  suitability: { cv: 40, interview: 45, consistency: 15 }, // employer score weights (%)
 };
 
 /* ---------------- Demo users & data ---------------- */
@@ -144,35 +143,35 @@ const jobs = [
     location: "Lahore", mode: "Remote", level: "Entry level", type: "Full-time", status: "open", createdAt: now - 9 * DAY,
     description: "Build accessible, responsive interfaces alongside a small product team shipping weekly.",
     skills: [{ name: "React", weight: 3 }, { name: "JavaScript", weight: 3 }, { name: "CSS", weight: 2 }, { name: "Git", weight: 1 }, { name: "Testing", weight: 1 }],
-    success: { minScore: 65, minMatch: 60, notes: "Comfortable explaining component design and responsive layouts." },
+    success: { minMatch: 60, notes: "Comfortable explaining component design and responsive layouts." },
   },
   {
     id: "job-2", employerId: "nsx-1", company: "Northstar Digital", title: "Web Developer Intern", roleId: "frontend",
     location: "Lahore", mode: "Hybrid", level: "Internship", type: "Internship", status: "open", createdAt: now - 4 * DAY,
     description: "Pair with senior developers on client websites and learn a production review workflow.",
     skills: [{ name: "HTML", weight: 2 }, { name: "CSS", weight: 2 }, { name: "JavaScript", weight: 2 }, { name: "Git", weight: 1 }],
-    success: { minScore: 55, minMatch: 50, notes: "Eagerness to learn and clear communication." },
+    success: { minMatch: 50, notes: "Eagerness to learn and clear communication." },
   },
   {
     id: "job-3", employerId: null, company: "Vertex Systems", title: "Junior Software Engineer", roleId: "backend",
     location: "Karachi", mode: "On-site", level: "Entry level", type: "Full-time", status: "open", createdAt: now - 7 * DAY,
     description: "Contribute to features, tests and maintenance for internal business applications.",
     skills: [{ name: "Python", weight: 3 }, { name: "SQL", weight: 3 }, { name: "REST APIs", weight: 2 }, { name: "Problem solving", weight: 2 }],
-    success: { minScore: 65, minMatch: 60, notes: "" },
+    success: { minMatch: 60, notes: "" },
   },
   {
     id: "job-4", employerId: null, company: "Crescent Analytics", title: "Associate Business Analyst", roleId: "analyst",
     location: "Lahore", mode: "Hybrid", level: "Entry level", type: "Full-time", status: "open", createdAt: now - 3 * DAY,
     description: "Turn stakeholder questions into clear reports and help teams make data-backed decisions.",
     skills: [{ name: "Data analysis", weight: 3 }, { name: "Excel", weight: 3 }, { name: "SQL", weight: 2 }, { name: "Communication", weight: 2 }],
-    success: { minScore: 60, minMatch: 60, notes: "" },
+    success: { minMatch: 60, notes: "" },
   },
   {
     id: "job-5", employerId: null, company: "Indus Media Co.", title: "Marketing Trainee", roleId: "marketing",
     location: "Gujrat", mode: "On-site", level: "Internship", type: "Internship", status: "open", createdAt: now - 1 * DAY,
     description: "Support campaign planning, social content and performance tracking for regional brands.",
     skills: [{ name: "Marketing", weight: 3 }, { name: "Communication", weight: 2 }, { name: "Teamwork", weight: 1 }],
-    success: { minScore: 55, minMatch: 50, notes: "" },
+    success: { minMatch: 50, notes: "" },
   },
 ];
 

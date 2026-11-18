@@ -4,8 +4,8 @@
  *
  *   VITE_BACKEND_MODULES = ""              → everything runs in the browser against the
  *                                            localStorage store (lib.js / cvParser.js).
- *   VITE_BACKEND_MODULES = "auth,employer,candidate" → the listed modules call the FastAPI backend at
- *                                            API_URL with a JWT bearer token; the rest stay local.
+ *   VITE_BACKEND_MODULES = "auth,employer,candidate,admin" → the listed modules call the FastAPI
+ *                                            backend at API_URL with a JWT bearer token; the rest stay local.
  *
  *   auth      lookup, signup, login (password or face), face enrol/delete, me
  *   employer  config, jobs, apply/withdraw, application status, candidate ranking,
@@ -13,6 +13,8 @@
  *   candidate CV analysis and editing, JD parsing and skill-gap match, the mock interview
  *             (questions, Gemini/rules evaluation, voice transcription, follow-ups, finish),
  *             progress and session history. Replaces the profile/session sync below.
+ *   admin     the admin console: domains, roles, skills, question templates, criteria, scoring
+ *             rules, user list and overview counts. Changes apply to everyone immediately.
  *
  * Backend responses are written back into the store, which then acts as a client-side
  * cache, so the pages render the same way whichever side did the work.
@@ -20,18 +22,18 @@
  * Every function returns a Promise and throws ApiError with a user-facing message.
  * The endpoint contract is documented in API.md.
  */
-import { evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, suitability, uid } from "./lib";
-import { extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
+import { cvFit, evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, uid } from "./lib";
+import { educationLevel, extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
 
 const MODULES = new Set(
   (import.meta.env.VITE_BACKEND_MODULES || "").split(",").map((m) => m.trim().toLowerCase()).filter(Boolean)
 );
-/** True when `module` ("auth" | "employer" | "candidate") is served by the backend. */
+/** True when `module` ("auth" | "employer" | "candidate" | "admin") is served by the backend. */
 export const uses = (module) => MODULES.has(module);
 export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/+$/, "");
 
-if ((uses("employer") || uses("candidate")) && !uses("auth")) {
-  console.warn("VITE_BACKEND_MODULES: the employer and candidate modules need the auth module too (their requests need a JWT).");
+if ((uses("employer") || uses("candidate") || uses("admin")) && !uses("auth")) {
+  console.warn("VITE_BACKEND_MODULES: the employer, candidate and admin modules need the auth module too (their requests need a JWT).");
 }
 
 const TOKEN_KEY = "intervo.token";
@@ -87,7 +89,7 @@ export function clearToken() {
 function errorMessage(data, status) {
   const detail = data?.detail;
   if (typeof detail === "string") return detail;
-  if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg; // FastAPI validation error
+  if (Array.isArray(detail) && detail[0]?.msg) return detail[0].msg.replace(/^Value error, /, ""); // FastAPI validation error
   if (status === 401) return "Your session has expired. Please sign in again.";
   if (status === 403) return "You don't have permission to do that.";
   if (status === 404) return "That item could not be found.";
@@ -406,7 +408,6 @@ export async function getProgress() {
 export async function saveSession(session) {
   const saved = { ...session, id: session.id || uid("s") };
   write((d) => upsert(d.sessions, saved));
-  pushSession(saved).catch(syncFailed); // the local save already succeeded
   return saved;
 }
 
@@ -527,14 +528,13 @@ function sessionFromServer(s) {
    =========================================================
  * The candidate pages keep CV skills and session scores in the local store. With the
  * employer module on, the backend ranks applicants, so it needs a copy of exactly what
- * the suitability score reads: skills, three CV facts, the sharing switch and per-answer
- * scores. CV text, contact details and answer text never leave the browser. */
+ * the employer's CV match reads: skills, three CV facts and the sharing switch. Interview
+ * sessions, CV text, contact details and answer text never leave the browser. */
 
 // The backend's candidate module saves CV and sessions itself, so this copy is only for the employer-only setup.
 const syncsCandidate = () => uses("employer") && !uses("candidate") && store?.user?.role === "candidate";
 const syncFailed = (e) => console.warn("Couldn't sync with the server:", e.message);
 const clip = (value) => String(value ?? "").slice(0, 200);
-const score100 = (n) => Math.min(100, Math.max(0, Math.round(Number(n) || 0)));
 
 function profileBody(profile = {}) {
   const cv = profile.cv;
@@ -571,30 +571,14 @@ export function syncProfileSoon(profile) {
   profileTimer = setTimeout(() => syncProfile(profile).catch(syncFailed), 600);
 }
 
-/** Sends one finished session's scores. The backend ignores a session id it already has. */
-async function pushSession(session) {
-  if (!syncsCandidate()) return;
-  await request("POST", "/sessions", {
-    id: session.id, roleId: session.roleId, mode: session.mode, date: session.date, score: score100(session.score),
-    answers: session.answers.map((a) => ({
-      questionId: a.questionId || null, question: String(a.question ?? "").slice(0, 2000), skill: a.skill, type: a.type,
-      score: score100(a.score), criteria: a.criteria || {}, indicators: a.indicators || null, reason: a.reason || null,
-    })),
-  });
-}
-
 /**
- * Sends everything the candidate has locally (profile and all sessions), so data from
- * before the sync existed reaches the server. Never throws: a failure here must not block
- * the action that triggered it.
+ * Sends the candidate's local profile (skills, CV summary, sharing switch), so data from before
+ * the sync existed reaches the server. Never throws: a failure here must not block the action
+ * that triggered it.
  */
 async function syncCandidateData(candidateId) {
   if (!syncsCandidate()) return;
-  const db = getDb();
-  await syncProfile(db.profiles[candidateId]).catch(syncFailed);
-  for (const session of db.sessions.filter((s) => s.userId === candidateId)) {
-    await pushSession(session).catch(syncFailed);
-  }
+  await syncProfile(getDb().profiles[candidateId]).catch(syncFailed);
 }
 
 /* =========================================================
@@ -684,19 +668,35 @@ export async function setApplicationStatus(applicationId, status) {
 }
 
 /**
- * Ranked applicants for one job with explainable suitability. Only candidates who
- * consented are returned with evidence; the rest are counted in `hidden`.
- * Resolves with { job, visible: [{ app, cand, profile, sessions, fit }], hidden }.
+ * Applicants for one job, best CV match first. Employers get only the CV skill match, the
+ * requirement checks and a short CV summary, never interview scores or practice data. Only
+ * candidates who consented are returned; the rest are counted in `hidden`.
+ * Resolves with { job, visible: [{ app, cand, cvSummary, match }], hidden }.
  */
 export async function getCandidates(jobId) {
   if (uses("employer")) {
     const { job, candidates, hidden } = await request("GET", `/jobs/${encodeURIComponent(jobId)}/candidates`);
-    const visible = candidates
-      .map((c) => ({ app: c.application, cand: c.candidate, profile: c.profile, sessions: c.sessions, fit: c.fit }))
-      .sort((a, b) => b.fit.total - a.fit.total);
-    return { job, visible, hidden };
+    const visible = candidates.map((c) => ({ app: c.application, cand: c.candidate, cvSummary: c.cvSummary, match: c.match }));
+    return { job, visible, hidden }; // the backend already ranks them
   }
   return getCandidatesSync(jobId);
+}
+
+/** Experience / education checks for a job whose description states them (local mode; the backend does the same). */
+function requirementChecks(job, profile) {
+  const jd = parseJDLocal(job.description || "", [], []);
+  const checks = [];
+  const years = profile?.cv?.experienceYears || 0;
+  if (jd.minYears > 0) {
+    checks.push({ key: "experience", label: "Experience", required: `${jd.minYears}+ years`, actual: `${years} years`, met: years >= jd.minYears || jd.fresherFriendly });
+  }
+  if (jd.education) {
+    const degrees = (profile?.cv?.education || []).map((e) => e.degree).filter(Boolean);
+    const have = Math.max(0, ...degrees.map(educationLevel));
+    const need = educationLevel(jd.education);
+    checks.push({ key: "education", label: "Education", required: jd.education, actual: degrees.find((d) => educationLevel(d) === have) || "Not found", met: need === 0 || have >= need });
+  }
+  return checks;
 }
 
 /** Local getCandidates without the Promise, so lists render in the same frame. Null when the backend ranks. */
@@ -707,14 +707,192 @@ export function getCandidatesSync(jobId, db = getDb()) {
   const visible = [];
   let hidden = 0;
   db.applications.filter((a) => a.jobId === jobId).forEach((app) => {
-    // Same rule the backend must apply: evidence only for consented, opted-in candidates.
+    // Same rule the backend applies: details only for consented, opted-in candidates.
     const cand = db.users.find((u) => u.id === app.candidateId);
     const profile = db.profiles[app.candidateId];
     if (!cand) return;
     if (!app.consent || profile?.shareWithEmployers === false) return hidden++;
-    const sessions = db.sessions.filter((s) => s.userId === cand.id);
-    visible.push({ app, cand, profile, sessions, fit: suitability({ job, profile, sessions, config: db.config }) });
+    const cv = profile?.cv;
+    const cvSummary = cv ? { topDegree: cv.education?.[0]?.degree || null, experienceYears: cv.experienceYears || 0, projectCount: cv.projects?.length || 0 } : null;
+    const match = cvFit({ job, profile, config: db.config, checks: requirementChecks(job, profile) });
+    visible.push({ app, cand, cvSummary, match });
   });
-  visible.sort((a, b) => b.fit.total - a.fit.total);
+  visible.sort((a, b) => b.match.percentage - a.match.percentage); // stable: ties keep application order
   return { job, visible, hidden };
+}
+
+/* =========================================================
+   Admin console
+   =========================================================
+ * With the admin module on, every screen reads and writes the backend (/api/admin/*), and the
+ * store's `db.config` becomes a cache of what the server holds, so the existing pages render
+ * unchanged. Without it, the same functions edit the local store as before. Each function
+ * throws ApiError with a message the UI shows as is (e.g. "Skill is used by a role"). */
+
+const ADMIN = "/admin";
+const byId = (id) => encodeURIComponent(id);
+
+/** Loads the configuration, user list and overview counts. With the admin module off this does nothing. */
+export async function loadAdminData() {
+  if (!uses("admin")) return;
+  const [domains, roles, skills, questions, criteria, rules, users, stats] = await Promise.all(
+    ["domains", "roles", "skills", "questions", "criteria", "rules", "users", "stats"].map((p) => request("GET", `${ADMIN}/${p}`))
+  );
+  write((d) => {
+    Object.assign(d.config, { domains, roles, skills, questions, criteria, rules });
+    d.adminUsers = users;
+    d.adminStats = stats;
+  });
+}
+
+/** Counts for the admin overview tiles, from the backend or from the local store. */
+export function adminStats(db) {
+  if (uses("admin") && db.adminStats) {
+    const s = db.adminStats;
+    return { candidates: s.candidates, employers: s.employers, sessions: s.sessions, openJobs: s.openJobs, applications: s.applications };
+  }
+  return {
+    candidates: db.users.filter((u) => u.role === "candidate").length,
+    employers: db.users.filter((u) => u.role === "employer").length,
+    sessions: db.sessions.length,
+    openJobs: db.jobs.filter((j) => j.status === "open").length,
+    applications: db.applications.length,
+  };
+}
+
+/** Rows for the admin Users page: { id, name, email, role, faceEnrolled, createdAt, sessions, jobs }. */
+export function adminUsers(db) {
+  if (uses("admin") && db.adminUsers) return db.adminUsers;
+  return db.users.map((u) => ({
+    id: u.id, name: u.name, email: u.email, role: u.role, faceEnrolled: !!u.face?.template, createdAt: u.createdAt,
+    sessions: db.sessions.filter((s) => s.userId === u.id).length,
+    jobs: db.jobs.filter((j) => j.employerId === u.id).length,
+  }));
+}
+
+/* ---- domains ---- */
+
+export async function addDomain(name) {
+  const trimmed = name.trim();
+  if (!trimmed) return null;
+  let domain;
+  if (uses("admin")) domain = await request("POST", `${ADMIN}/domains`, { name: trimmed });
+  else {
+    if (getDb().config.domains.some((d) => d.name.toLowerCase() === trimmed.toLowerCase())) throw new ApiError(`A domain named "${trimmed}" already exists.`, 409);
+    domain = { id: uid("dom"), name: trimmed };
+  }
+  write((d) => { d.config.domains.push(domain); });
+  return domain;
+}
+
+export async function removeDomain(id) {
+  if (uses("admin")) await request("DELETE", `${ADMIN}/domains/${byId(id)}`);
+  else if (getDb().config.roles.some((r) => r.domainId === id)) throw new ApiError("Move or delete this domain's roles first", 409);
+  write((d) => { d.config.domains = d.config.domains.filter((x) => x.id !== id); });
+}
+
+/* ---- job roles ---- */
+
+/** Creates (no id) or updates (with id) a role: { id?, title, domainId, skills: [{ name, weight }] }. */
+export async function saveRole(role) {
+  let saved;
+  if (uses("admin")) {
+    const body = { title: role.title, domainId: role.domainId, skills: role.skills };
+    saved = role.id ? await request("PUT", `${ADMIN}/roles/${byId(role.id)}`, body) : await request("POST", `${ADMIN}/roles`, body);
+  } else saved = role.id ? role : { ...role, id: uid("role") };
+  write((d) => upsert(d.config.roles, saved));
+  return saved;
+}
+
+export async function removeRole(id) {
+  if (uses("admin")) await request("DELETE", `${ADMIN}/roles/${byId(id)}`);
+  write((d) => { d.config.roles = d.config.roles.filter((x) => x.id !== id); });
+}
+
+/* ---- skills ---- */
+
+/** Re-reads skills and question templates (a skill rename or delete changes both). */
+async function reloadSkills() {
+  const [skills, questions] = await Promise.all([request("GET", `${ADMIN}/skills`), request("GET", `${ADMIN}/questions`)]);
+  write((d) => { d.config.skills = skills; d.config.questions = questions; });
+}
+
+/** Creates or updates a skill: { id?, name, aliases, related, tip }. `originalName` identifies it in local mode. */
+export async function saveSkill(skill, originalName) {
+  if (uses("admin")) {
+    const body = { name: skill.name, aliases: skill.aliases, related: skill.related || [], tip: skill.tip || "" };
+    if (skill.id) await request("PUT", `${ADMIN}/skills/${byId(skill.id)}`, body);
+    else await request("POST", `${ADMIN}/skills`, body);
+    return reloadSkills();
+  }
+  write((d) => {
+    const i = d.config.skills.findIndex((s) => s.name === originalName);
+    if (i >= 0) d.config.skills[i] = skill;
+    else d.config.skills.push(skill);
+  });
+}
+
+export async function removeSkill(skill) {
+  if (uses("admin")) {
+    await request("DELETE", `${ADMIN}/skills/${byId(skill.id)}`);
+    return reloadSkills();
+  }
+  const db = getDb();
+  if (db.config.roles.some((r) => r.skills.some((s) => s.name === skill.name)) || db.jobs.some((j) => j.skills.some((s) => s.name === skill.name))) {
+    throw new ApiError(`Skill is used by a role or job ("${skill.name}")`, 409);
+  }
+  write((d) => {
+    d.config.skills = d.config.skills.filter((s) => s.name !== skill.name);
+    d.config.questions = d.config.questions.filter((x) => x.skill !== skill.name);
+  });
+}
+
+/* ---- question templates ---- */
+
+/** Creates (no id) or updates (with id) a template: { id?, skill, type, text, keywords, followUp }. */
+export async function saveQuestion(q) {
+  let saved;
+  if (uses("admin")) {
+    const body = { skill: q.skill, type: q.type, text: q.text, keywords: q.keywords, followUp: q.followUp || "" };
+    saved = q.id ? await request("PUT", `${ADMIN}/questions/${byId(q.id)}`, body) : await request("POST", `${ADMIN}/questions`, body);
+  } else saved = q.id ? q : { ...q, id: uid("q") };
+  write((d) => upsert(d.config.questions, saved));
+  return saved;
+}
+
+export async function removeQuestion(id) {
+  if (uses("admin")) await request("DELETE", `${ADMIN}/questions/${byId(id)}`);
+  write((d) => { d.config.questions = d.config.questions.filter((x) => x.id !== id); });
+}
+
+/* ---- criteria and rules ---- */
+
+/** Changes one criterion's weight (1-3) and/or enabled switch. Shown at once; put back if the server refuses. */
+export async function setCriterion(key, patch) {
+  const before = getDb().config.criteria;
+  const current = before.find((c) => c.key === key);
+  const next = { weight: patch.weight ?? current.weight, enabled: patch.enabled ?? current.enabled };
+  write((d) => { Object.assign(d.config.criteria.find((c) => c.key === key), next); });
+  if (!uses("admin")) return;
+  try {
+    const criteria = await request("PUT", `${ADMIN}/criteria`, { criteria: [{ key, ...next }] });
+    write((d) => { d.config.criteria = criteria; });
+  } catch (e) {
+    write((d) => { d.config.criteria = before; });
+    throw e;
+  }
+}
+
+/** Changes one or more scoring rules, e.g. { defaultQuestions: 4 }. Shown at once; put back if the server refuses. */
+export async function setRules(patch) {
+  const before = getDb().config.rules;
+  write((d) => { Object.assign(d.config.rules, patch); });
+  if (!uses("admin")) return;
+  try {
+    const rules = await request("PUT", `${ADMIN}/rules`, patch);
+    write((d) => { d.config.rules = { ...d.config.rules, ...rules }; });
+  } catch (e) {
+    write((d) => { d.config.rules = before; });
+    throw e;
+  }
 }

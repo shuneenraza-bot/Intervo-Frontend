@@ -1,6 +1,6 @@
 # Intervo REST API
 
-The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) for each module listed in `VITE_BACKEND_MODULES` (`auth`, `employer`, `candidate`; see the README and the backend's `/docs` for the `candidate` endpoints). The other functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
+The endpoints the FastAPI backend must provide for the frontend. The frontend calls them from [src/api.js](src/api.js) for each module listed in `VITE_BACKEND_MODULES` (`auth`, `employer`, `candidate`, `admin`; see the README and the backend's `/docs` for the `candidate` and `admin` endpoints). The other functions run locally in the browser. Those local versions are the reference behaviour: if anything here is unclear, the matching function in `src/lib.js` or `src/cvParser.js` shows exactly what to return.
 
 ## Conventions
 
@@ -36,6 +36,7 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `setJobStatus` | PATCH | `/jobs/{jobId}/status` | employer (owner) |
 | `getCandidates` | GET | `/jobs/{jobId}/candidates` | employer (owner) |
 | `setApplicationStatus` | PATCH | `/applications/{applicationId}` | employer (owner) |
+| `loadAdminData`, `addDomain`, `saveRole`, `saveSkill`, `saveQuestion`, `setCriterion`, `setRules` … | GET / POST / PUT / DELETE | `/admin/*` (see [Admin endpoints](#admin-endpoints)) | admin |
 
 ---
 
@@ -101,10 +102,10 @@ Errors: `409` email already registered · `422` invalid input.
 All three return the signed-in `User`. `GET /auth/me` is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and enrols or replaces Face ID; `DELETE` removes it.
 
 ### GET `/config`
-The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates, the skill library and the suitability weights.
+The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates and the skill library; the candidate and interview code read the rules.
 
 ### POST `/cv/analyze`
-Extracts text from a CV and parses it into sections. **Also saves the result on the caller's profile** (`cv` and `skills`), because employers' suitability scores read it.
+Extracts text from a CV and parses it into sections. **Also saves the result on the caller's profile** (`cv` and `skills`), because the employer's CV match reads it.
 
 Request: `multipart/form-data` containing **either** `file` (PDF/DOCX/TXT, max 5 MB) **or** `text` (pasted CV).
 
@@ -170,7 +171,7 @@ Response `201`: the stored `Session` (with `id`).
 - Skills, roles and questions the server doesn't know are stored without the link (`skill: ""`, `roleId: null`, `questionId: null`).
 
 ### PUT `/profile`
-Candidate only. Replaces what the suitability score reads from the profile:
+Candidate only. Replaces what the employer's CV match reads from the profile:
 
 ```ts
 { skills: string[];
@@ -179,7 +180,7 @@ Candidate only. Replaces what the suitability score reads from the profile:
 ```
 Response `200`: the same object as stored. CV text and contact details are not sent, and are ignored if present.
 
-The frontend calls it after a CV analysis or edit is saved (`syncProfileSoon`, in the background), when the sharing switch changes (`syncProfile`, the switch only moves if the server accepted it), and once, together with every local session, just before `applyToJob`.
+The frontend calls it after a CV analysis or edit is saved (`syncProfileSoon`, in the background), when the sharing switch changes (`syncProfile`, the switch only moves if the server accepted it), and once just before `applyToJob`. Interview sessions are not sent to the employer-side backend.
 
 ### GET `/jobs`
 Response `200`:
@@ -195,7 +196,7 @@ Create or update a posting. On create, the server sets `id`, `employerId`, `comp
 Response `201` / `200`: the stored `Job`.
 
 ### POST `/jobs/{jobId}/apply`
-Request: `{ "consent": true }`. Consent means "share my CV match and interview results with this employer". If `consent` is true, also set the candidate's `profile.shareWithEmployers = true`.
+Request: `{ "consent": true }`. Consent means "share my CV skill match with this employer". Interview results are never shared with employers. If `consent` is true, also set the candidate's `profile.shareWithEmployers = true`.
 
 Response `201`: `Application`. Errors: `409` already applied · `404` job missing or closed.
 
@@ -203,9 +204,11 @@ Response `201`: `Application`. Errors: `409` already applied · `404` job missin
 Withdraws the caller's application. Response `204`.
 
 ### GET `/jobs/{jobId}/candidates`
-Ranks the applicants for one job with an explainable suitability score. Reference: `suitability` in `src/lib.js` and `getCandidatesSync` in `src/api.js`.
+Ranks the applicants for one job by **CV skill match only**. Employers never see interview data: no sessions, interview or practice scores, weak skills, session counts, trends or answer text anywhere in this response. Reference: `cvFit` in `src/lib.js`, `getCandidatesSync` in `src/api.js` and `cv_fit` in the backend's `app/services/matching.py`.
 
-**Privacy rule:** return evidence only for applicants where `application.consent` is true **and** `profile.shareWithEmployers` is not false. Count the rest in `hidden`, with no details.
+**Privacy rule:** return details only for applicants where `application.consent` is true **and** `profile.shareWithEmployers` is not false. Count the rest in `hidden`, with no details.
+
+**Ranking:** `match.percentage`, highest first; ties keep the order the candidates applied in. `meetsCriteria` is true when `percentage >= job.success.minMatch`. The `checks` come from the job description: "3+ years" adds an experience check and "Bachelor's…" an education check (the same reading the candidate's job-description match uses), compared with the CV's years of experience and degrees. A job whose description states neither has no checks.
 
 Response `200`:
 ```json
@@ -216,16 +219,41 @@ Response `200`:
     {
       "application": Application,
       "candidate": { "id": "cand-1", "name": "Ayesha Khan", "email": "ayesha@intervo.demo" },
-      "profile": Profile,
-      "sessions": Session[],
-      "fit": Suitability
+      "cvSummary": { "topDegree": "BS Computer Science", "experienceYears": 1.5, "projectCount": 2 },
+      "match": CVMatch
     }
   ]
 }
 ```
+`cvSummary` is `null` when the candidate has no CV. Nothing else is returned: no profile, CV text or contact details.
 
 ### PATCH `/applications/{applicationId}`
 Request: `{ "status": "shortlisted" }`. Allowed values: `"new"`, `"shortlisted"`, `"declined"`. Response `200`: `Application`.
+
+---
+
+## Admin endpoints
+
+Every route needs an admin account (`403` otherwise, `401` without a token). Bodies are validated with Pydantic (`422` with a readable `detail`). Unknown ids are `404`, duplicate names `409`, and deleting something that is in use is `409` with a message such as `Skill is used by a role ("Frontend Developer"). Remove it from the role first.` The frontend shows these messages as they are.
+
+Changes apply immediately: the interview engine, CV matching, evaluation and the employer list read the configuration from the database on every request, and nothing is cached. `GET /config` always returns the current values.
+
+| Method | Path | Body | Notes |
+|---|---|---|---|
+| GET · POST | `/admin/domains` | `{ name }` | `409` duplicate name |
+| PUT · DELETE | `/admin/domains/{id}` | `{ name }` | delete: `409` while a role uses it |
+| GET · POST | `/admin/roles` | `{ title, domainId, skills: [{ name, weight 1-3 }] }` | at least one skill; `422` unknown skill or domain |
+| PUT · DELETE | `/admin/roles/{id}` | same | delete: `409` while a job uses it |
+| GET · POST | `/admin/skills` | `{ name, aliases[], related[], tip }` | `related` are skill names; aliases are stored lowercase |
+| PUT · DELETE | `/admin/skills/{id}` | same | renaming updates other skills' `related`; delete: `409` while a role or job uses it, removes its question templates |
+| GET · POST | `/admin/questions?skill=` | `{ skill, type: "technical" \| "behavioral", text, keywords[], followUp }` | `409` if the skill already has that text |
+| PUT · DELETE | `/admin/questions/{id}` | same | |
+| GET · PUT | `/admin/criteria` | `{ criteria: [{ key, weight 1-3, enabled }] }` | `404` unknown key; at least one must stay enabled |
+| GET · PUT | `/admin/rules` | any of `weakThreshold` 30-90, `weakMinSessions` 1-5, `followUpBelow` 30-80, `defaultQuestions` 3-6, `faceThreshold` 0.3-0.9 | omitted fields keep their value; returns all five |
+| GET | `/admin/users?role=` | | `{ id, name, email, role, company, faceEnrolled, createdAt, sessions, jobs }`; never a password hash or face template |
+| GET | `/admin/stats` | | counts for the overview: `candidates, employers, admins, sessions, jobs, openJobs, applications, domains, roles, skills, questions, criteriaEnabled` |
+
+Responses use the shapes of `config` in `src/data.js` (a skill also carries its `id`). POST returns `201` with the stored item; DELETE returns `204`.
 
 ---
 
@@ -287,7 +315,7 @@ Job {
   level: string; type: string;      // e.g. "Entry level", "Full-time"
   status: "open" | "closed"; createdAt: number;
   skills: { name: string; weight: 1 | 2 | 3 }[];
-  success: { minScore: number; minMatch: number; notes: string };
+  success: { minMatch: number; notes: string };   // minimum CV skill match (0-100); there is no interview score
 }
 
 Application {
@@ -296,23 +324,19 @@ Application {
   status?: "new" | "shortlisted" | "declined";
 }
 
-Suitability {
-  total: number;                    // 0–100
-  factors: { key: "cv" | "interview" | "consistency"; label: string; value: number; weight: number; detail: string }[];
-  cv: { matched: Skill[]; partial: (Skill & { via: string })[]; missing: Skill[]; percentage: number };
-  evidence: (Skill & { perf?: { skill: string; avg: number; scores: number[]; sessions: number; latest: number; trend: number; weak: boolean } })[];
-  avgScore: number;
-  meetsCriteria: boolean;
-  weak: string[];                   // persistent weak skills
+CVMatch {                           // the only per-candidate result employers get
+  percentage: number;               // 0-100, weighted by skill weight; a related skill counts half
+  matched: Skill[]; partial: (Skill & { via: string })[]; missing: Skill[];
+  checks: { key: "experience" | "education"; label: string; required: string; actual: string; met: boolean }[];
+  meetsCriteria: boolean;           // percentage >= job.success.minMatch
 }
 // Skill = { name: string; weight: number }
 ```
 
 ## Not covered yet
 
-These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (the `candidate` module now covers CV, JD and interviews on the backend; `/interview/evaluate` and `GET /sessions` above are only used in local mode):
+These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (the `candidate` module covers CV, JD and interviews and the `admin` module the admin console on the backend; `/interview/evaluate` and `GET /sessions` above are only used in local mode):
 
-- Admin configuration: domains, roles, skills, questions, criteria, rules (`AdminApp.jsx`). The local evaluator and parsers read these.
 - Profile edits: name, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
 - Recording `lastLogin` after face verification (`Auth.jsx`).
 - Fetching a user's profile from the server. The candidate's own profile currently comes from the local cache, filled by `analyzeCV`.

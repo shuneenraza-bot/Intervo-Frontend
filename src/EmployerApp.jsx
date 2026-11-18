@@ -9,7 +9,7 @@ const NO_APPLICANTS = { job: null, visible: [], hidden: 0 };
 
 /**
  * Ranked applicants for each job id → { [jobId]: { job, visible, hidden } }.
- * Only consented, opted-in candidates expose evidence. Local mode computes from
+ * Only consented, opted-in candidates are listed, and only with their CV skill match. Local mode computes from
  * the store in the same render; backend mode fetches and refetches when the store changes.
  */
 function useApplicants(jobIds) {
@@ -41,7 +41,7 @@ export default function EmployerApp({ page, go, params }) {
   const myJobs = db.jobs.filter((j) => j.employerId === user.id).sort((a, b) => b.createdAt - a.createdAt);
 
   useEffect(() => {
-    // Roles, skills and scoring weights first, then the jobs (both are local reads when the employer module is off).
+    // Roles and skills first, then the jobs (both are local reads when the employer module is off).
     api.getConfig().then(() => api.getJobs()).catch((e) => notify(e.message, "bad"));
   }, [notify]);
   const [selectedJob, setSelectedJob] = useState(params.jobId || myJobs[0]?.id || "");
@@ -65,18 +65,18 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
   const ranked = useApplicants(myJobs.map((j) => j.id));
   const shared = Object.values(ranked).flatMap((r) => r.visible); // applicants who consented and share their profile
   const top = Object.values(ranked)
-    .flatMap(({ job, visible }) => visible.map(({ app, cand, fit }) => ({ a: app, job, cand, fit })))
-    .sort((x, y) => y.fit.total - x.fit.total || db.applications.indexOf(x.a) - db.applications.indexOf(y.a));
+    .flatMap(({ job, visible }) => visible.map(({ app, cand, match }) => ({ a: app, job, cand, match })))
+    .sort((x, y) => y.match.percentage - x.match.percentage || db.applications.indexOf(x.a) - db.applications.indexOf(y.a));
 
   return (
     <>
-      <PageHeader kicker={user.company} title="Hiring overview" subtitle="Your open roles and the candidates who chose to share their interview evidence with you."
+      <PageHeader kicker={user.company} title="Hiring overview" subtitle="Your open roles and the candidates who chose to share their CV skill match with you."
         actions={<button className="btn btn--primary" onClick={() => go("jobs")}><Icon name="plus" size={16} /> Post a job</button>} />
       <section className="stats">
         <Stat label="Open jobs" value={myJobs.filter((j) => j.status === "open").length} hint={plural(myJobs.length, "total posting")} icon="briefcase" accent="blue" />
         <Stat label="Applicants" value={apps.length} hint="Across all postings" icon="users" accent="violet" />
-        <Stat label="Sharing evidence" value={shared.length} hint={`${apps.length - shared.length} without consent`} icon="shield" accent="green" />
-        <Stat label="Avg suitability" value={top.length ? `${Math.round(top.reduce((s, t) => s + t.fit.total, 0) / top.length)}%` : "—"} hint="Opted-in applicants" icon="target" accent="amber" />
+        <Stat label="Sharing CV match" value={shared.length} hint={`${apps.length - shared.length} without consent`} icon="shield" accent="green" />
+        <Stat label="Avg CV match" value={top.length ? `${Math.round(top.reduce((s, t) => s + t.match.percentage, 0) / top.length)}%` : "—"} hint="Opted-in applicants" icon="target" accent="amber" />
       </section>
 
       <section className="grid grid--overview">
@@ -99,33 +99,33 @@ function EmployerOverview({ myJobs, go, openCandidates }) {
             <Empty icon="briefcase" title="No postings yet" text="Create a job with required skills and success criteria to start receiving candidates." action="Post a job" onAction={() => go("jobs")} />
           )}
         </Card>
-        <Card title="Top candidates" subtitle="Highest suitability, opted-in only">
+        <Card title="Top candidates" subtitle="Highest CV skill match, opted-in only">
           {top.length ? (
             <ul className="rank-list">
-              {top.slice(0, 5).map(({ a, job, cand, fit }) => (
+              {top.slice(0, 5).map(({ a, job, cand, match }) => (
                 <li key={a.id}>
                   <span className="avatar">{initials(cand.name)}</span>
                   <div><strong>{cand.name}</strong><span>{job.title}</span></div>
-                  {fit.meetsCriteria && <Icon name="checkCircle" size={16} className="rank-list__ok" />}
-                  {fit.total > 0
-                    ? <span className={`pill pill--${scoreTone(fit.total)}`}>{fit.total}%</span>
-                    : <span className="pill pill--muted">No data yet</span>}
+                  {match.meetsCriteria && <Icon name="checkCircle" size={16} className="rank-list__ok" />}
+                  {match.percentage > 0
+                    ? <span className={`pill pill--${scoreTone(match.percentage)}`}>{match.percentage}%</span>
+                    : <span className="pill pill--muted">No match yet</span>}
                 </li>
               ))}
             </ul>
           ) : (
-            <Empty icon="users" title="No shared evidence yet" text="Candidates appear here once they apply and consent to sharing." />
+            <Empty icon="users" title="No shared CV matches yet" text="Candidates appear here once they apply and consent to sharing." />
           )}
         </Card>
       </section>
-      <Note>Suitability is decision support only. Final selection always stays with the employer — Intervo makes no automated hiring decisions.</Note>
+      <Note>The CV skill match is decision support only. Final selection always stays with the employer — Intervo makes no automated hiring decisions.</Note>
     </>
   );
 }
 
 /* ---------------- Job postings ---------------- */
 
-const EMPTY_JOB = { title: "", roleId: "", location: "", mode: "On-site", level: "Entry level", type: "Full-time", description: "", skills: [], success: { minScore: 60, minMatch: 60, notes: "" }, status: "open" };
+const EMPTY_JOB = { title: "", roleId: "", location: "", mode: "On-site", level: "Entry level", type: "Full-time", description: "", skills: [], success: { minMatch: 60, notes: "" }, status: "open" };
 
 function JobPostings({ myJobs, openCandidates }) {
   const { db, notify, user } = useStore();
@@ -148,7 +148,7 @@ function JobPostings({ myJobs, openCandidates }) {
 
   return (
     <>
-      <PageHeader kicker="Recruitment" title="Job postings" subtitle="Define required skills with weights and the success criteria used in the suitability score."
+      <PageHeader kicker="Recruitment" title="Job postings" subtitle="Define required skills with weights and the minimum CV skill match used to rank candidates."
         actions={<button className="btn btn--primary" onClick={() => setEditing({ ...EMPTY_JOB, roleId: config.roles[0].id, skills: config.roles[0].skills })}><Icon name="plus" size={16} /> New job</button>} />
       {myJobs.length ? (
         <div className="jobs">
@@ -168,7 +168,6 @@ function JobPostings({ myJobs, openCandidates }) {
                 </div>
                 <div className="chips">{job.skills.map((s) => <span className="chip" key={s.name}>{s.name}<Weight w={s.weight} /></span>)}</div>
                 <div className="criteria-mini">
-                  <span>Min interview score <b>{job.success.minScore}%</b></span>
                   <span>Min CV match <b>{job.success.minMatch}%</b></span>
                 </div>
                 <div className="job__foot">
@@ -208,11 +207,11 @@ function JobEditor({ job, onClose, onSave }) {
     if (form.title.trim().length < 3) return setError("Add a job title.");
     if (!form.location.trim()) return setError("Add a location.");
     if (!form.skills.length) return setError("Add at least one required skill.");
-    onSave({ ...form, title: form.title.trim(), location: form.location.trim() });
+    onSave({ ...form, title: form.title.trim(), location: form.location.trim(), success: { minMatch: form.success.minMatch, notes: form.success.notes } });
   }
 
   return (
-    <Modal open wide onClose={onClose} title={job.id ? "Edit job posting" : "New job posting"} subtitle="Required skills and their weights drive the CV match and suitability score."
+    <Modal open wide onClose={onClose} title={job.id ? "Edit job posting" : "New job posting"} subtitle="Required skills and their weights drive the CV skill match."
       footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" onClick={submit}>{job.id ? "Save changes" : "Publish job"}</button></>}>
       <div className="form">
         <div className="form__grid">
@@ -267,7 +266,6 @@ function JobEditor({ job, onClose, onSave }) {
         <div className="field">
           <label>Success criteria</label>
           <div className="form__grid">
-            <RangeField label="Minimum interview score" value={form.success.minScore} onChange={(v) => setForm((f) => ({ ...f, success: { ...f.success, minScore: v } }))} />
             <RangeField label="Minimum CV skill match" value={form.success.minMatch} onChange={(v) => setForm((f) => ({ ...f, success: { ...f.success, minMatch: v } }))} />
           </div>
           <textarea rows={2} data-lenis-prevent value={form.success.notes} onChange={(e) => setForm((f) => ({ ...f, success: { ...f.success, notes: e.target.value } }))} placeholder="What does success in this role look like? (optional)" />
@@ -287,7 +285,7 @@ function RangeField({ label, value, onChange }) {
   );
 }
 
-/* ---------------- Candidates & explainable suitability ---------------- */
+/* ---------------- Candidates ranked by CV skill match ---------------- */
 
 const STATUS = [
   { value: "new", label: "New" },
@@ -299,7 +297,6 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
   const { db, notify } = useStore();
   const { job, visible, hidden } = useApplicants(jobId ? [jobId] : [])[jobId] || NO_APPLICANTS;
   const [openId, setOpenId] = useState(null);
-  const w = api.employerConfig(db).rules.suitability;
 
   if (!myJobs.length) return (
     <>
@@ -310,19 +307,20 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
 
   return (
     <>
-      <PageHeader kicker="Explainable suitability" title="Candidates"
-        subtitle={`Score = CV match ×${w.cv}% + interview evidence ×${w.interview}% + consistency ×${w.consistency}%. Only candidates who opted in are shown.`} />
+      <PageHeader kicker="CV skill match" title="Candidates"
+        subtitle="Ranked by how well each candidate's CV covers the skills this job requires. Only candidates who opted in are shown." />
       <div className="toolbar">
         <select className="select select--lg" value={job?.id} onChange={(e) => { setJobId(e.target.value); setOpenId(null); }} aria-label="Job">
           {myJobs.map((j) => <option key={j.id} value={j.id}>{j.title} — {plural(db.applications.filter((a) => a.jobId === j.id).length, "applicant")}</option>)}
         </select>
-        {hidden > 0 && <span className="badge badge--muted"><Icon name="lock" size={12} /> {plural(hidden, "applicant")} not sharing evidence</span>}
+        {hidden > 0 && <span className="badge badge--muted"><Icon name="lock" size={12} /> {plural(hidden, "applicant")} not sharing their CV match</span>}
       </div>
 
       {visible.length ? (
         <div className="cand-list">
-          {visible.map(({ app, cand, profile, fit }, rank) => {
+          {visible.map(({ app, cand, cvSummary, match }, rank) => {
             const open = openId === app.id;
+            const skillState = (name) => (match.matched.some((m) => m.name === name) ? "match" : match.partial.some((m) => m.name === name) ? "partial" : "missing");
             return (
               <article className={`cand ${open ? "is-open" : ""}`} key={app.id}>
                 <button className="cand__row" onClick={() => setOpenId(open ? null : app.id)} aria-expanded={open}>
@@ -330,55 +328,54 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                   <span className="avatar">{initials(cand.name)}</span>
                   <div className="cand__name">
                     <strong>{cand.name}</strong>
-                    <span>Applied {formatDate(app.date)} · {fit.cv.matched.length}/{plural(job.skills.length, "skill")} matched</span>
+                    <span>Applied {formatDate(app.date)} · {match.matched.length}/{plural(job.skills.length, "skill")} matched</span>
                   </div>
                   <div className="cand__factors">
-                    {fit.factors.map((f) => (
-                      <div key={f.key} title={f.detail}><span>{f.label}</span><Meter value={f.value} /><b>{f.value}</b></div>
-                    ))}
+                    <div title={`${match.matched.length} matched, ${match.partial.length} partial, ${match.missing.length} missing`}><span>CV skill match</span><Meter value={match.percentage} /><b>{match.percentage}</b></div>
                   </div>
-                  {fit.meetsCriteria ? <span className="badge badge--good"><Icon name="checkCircle" size={12} /> Meets criteria</span> : <span className="badge badge--muted">Below criteria</span>}
-                  <ScoreRing value={fit.total} size={58} stroke={6} tone={fit.total > 0 ? undefined : "muted"} />
+                  {match.meetsCriteria ? <span className="badge badge--good"><Icon name="checkCircle" size={12} /> Meets criteria</span> : <span className="badge badge--muted">Below criteria</span>}
+                  <ScoreRing value={match.percentage} size={58} stroke={6} tone={match.percentage > 0 ? undefined : "muted"} />
                   <Icon name="chevronDown" size={18} className="cand__chev" />
                 </button>
                 {open && (
                   <div className="cand__detail">
                     <div className="cand__col">
-                      <h4>How the score is built</h4>
-                      <ul className="factor-list">
-                        {fit.factors.map((f) => (
-                          <li key={f.key}>
-                            <div className="factor-list__top"><strong>{f.label}</strong><span>{f.value} × {f.weight}% = <b>{Math.round((f.value * f.weight) / 100)}</b></span></div>
-                            <Meter value={f.value} />
-                            <small>{f.detail}</small>
-                          </li>
-                        ))}
-                        <li className="factor-list__total"><strong>Suitability</strong><b>{fit.total}%</b></li>
-                      </ul>
-                    </div>
-                    <div className="cand__col">
-                      {profile?.cv && (profile.cv.education?.length > 0 || profile.cv.experienceYears > 0 || profile.cv.projects?.length > 0) && (
-                        <>
-                          <h4>From the CV</h4>
-                          <p className="cv-line">
-                            {[profile.cv.education?.[0]?.degree, profile.cv.experienceYears ? `${plural(profile.cv.experienceYears, "yr")} experience` : "No dated experience", profile.cv.projects?.length ? plural(profile.cv.projects.length, "project") : null].filter(Boolean).join(" · ")}
-                          </p>
-                        </>
-                      )}
-                      <h4 className={profile?.cv ? "mt-sm" : ""}>Skill evidence</h4>
+                      <h4>Required skills</h4>
                       <div className="evidence">
-                        {fit.evidence.map((e) => {
-                          const inCv = fit.cv.matched.some((m) => m.name === e.name) ? "match" : fit.cv.partial.some((m) => m.name === e.name) ? "partial" : "missing";
+                        {[...match.matched, ...match.partial, ...match.missing].map((e) => {
+                          const state = skillState(e.name);
                           return (
                             <div className="evidence__row" key={e.name}>
                               <span className="evidence__skill">{e.name}<Weight w={e.weight} /></span>
-                              <span className={`chip chip--${inCv === "match" ? "good" : inCv === "partial" ? "fair" : "warn"}`}>CV: {inCv}</span>
-                              {e.perf ? <span className={`score-text score-text--${scoreTone(e.perf.avg)}`}>{e.perf.avg}%</span> : <span className="field__hint">no answers</span>}
+                              <span className={`chip chip--${state === "match" ? "good" : state === "partial" ? "fair" : "warn"}`}>
+                                {state === "match" ? "Matched" : state === "partial" ? `Partial · via ${e.via}` : "Missing"}
+                              </span>
                             </div>
                           );
                         })}
                       </div>
-                      {fit.weak.length > 0 && <p className="field__hint">Working on: {fit.weak.join(", ")}</p>}
+                      <p className="field__hint">{match.percentage}% weighted match · a related skill counts as half. Minimum for this job: {job.success?.minMatch ?? 0}%.</p>
+                    </div>
+                    <div className="cand__col">
+                      {match.checks?.length > 0 && (
+                        <>
+                          <h4>Requirement checks</h4>
+                          <ul className="req-checks">
+                            {match.checks.map((c) => (
+                              <li key={c.key} className={c.met ? "is-ok" : "is-miss"}>
+                                <Icon name={c.met ? "checkCircle" : "alert"} size={16} />
+                                <div><strong>{c.label}: {c.required}</strong><span>{c.actual}</span></div>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                      <h4 className="mt-sm">From the CV</h4>
+                      <p className="cv-line">
+                        {cvSummary
+                          ? [cvSummary.topDegree, cvSummary.experienceYears ? `${plural(cvSummary.experienceYears, "yr")} experience` : "No dated experience", cvSummary.projectCount ? plural(cvSummary.projectCount, "project") : null].filter(Boolean).join(" · ")
+                          : "No CV summary shared yet"}
+                      </p>
                       <div className="field">
                         <label>Your decision</label>
                         <Segmented options={STATUS} value={app.status || "new"} onChange={(v) => api.setApplicationStatus(app.id, v).catch((e) => notify(e.message, "bad"))} />
@@ -391,9 +388,9 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
           })}
         </div>
       ) : (
-        <Card><Empty icon="users" title="No opted-in candidates yet" text="When candidates apply and agree to share their results, they appear here ranked by suitability." /></Card>
+        <Card><Empty icon="users" title="No opted-in candidates yet" text="When candidates apply and agree to share, they appear here ranked by CV skill match." /></Card>
       )}
-      <Note>Raw answers, face data and personal history are never shown to employers — only skill-level evidence the candidate agreed to share.</Note>
+      <Note>Employers see only the CV skill match. Interview answers, scores, practice history, face data and contact details beyond the name and email are never shown.</Note>
     </>
   );
 }

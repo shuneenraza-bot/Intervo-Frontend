@@ -4,7 +4,7 @@ React app for **Intervo**, an AI-assisted interview coaching and candidate scree
 
 Final Year Project, Department of Software Engineering, University of Gujrat.
 
-Intervo helps a candidate prepare for interviews: it reads their CV, shows the skill gap against a target role or job description, runs mock interviews in text, voice or video, and tracks weak skills over time. Employers post jobs and see applicants ranked by an explainable suitability score, using only the evidence each candidate agreed to share. An admin configures the roles, skills, questions and scoring rules.
+Intervo helps a candidate prepare for interviews: it reads their CV, shows the skill gap against a target role or job description, runs mock interviews in text, voice or video, and tracks weak skills over time. Employers post jobs and see applicants ranked by how well their CV skills match the job, only for candidates who agreed to share. Employers never see interview scores. An admin configures the roles, skills, questions and scoring rules.
 
 This repository is the browser side, with three portals: candidate, employer and admin. The API and database are in **[Intervo-Backend](https://github.com/shuneenraza-bot/Intervo-Backend)**.
 
@@ -38,8 +38,8 @@ Status at the 30% evaluation. "Where it runs" matters because part of the system
 | 7 | Presentation cues in video mode | Eye contact and expressiveness from face landmarks | Browser (MediaPipe) | ✅ Done |
 | 8 | Progress tracking | Score trend, per-skill history and persistent weakness detection | Browser; session scores are also saved to PostgreSQL | ✅ Done |
 | 9 | Job matching and applications | Candidates see match scores, apply with explicit consent and can withdraw | Backend | ✅ Done |
-| 10 | Employer module | Job postings with weighted skills and success criteria; ranked candidates with an explainable suitability score; shortlist or decline | Backend | ✅ Done |
-| 11 | Admin configuration | Domains and roles, skills, question templates, criteria and rules, users | Browser | ✅ Done in browser · ⏳ saved to backend |
+| 10 | Employer module | Job postings with weighted skills and success criteria; candidates ranked by CV skill match only (never interview scores); shortlist or decline | Backend | ✅ Done |
+| 11 | Admin configuration | Domains and roles, skills, question templates, criteria and rules, users | Backend (`admin` module), or browser when it is off | ✅ Done |
 | 12 | Privacy controls | Consent when applying, sharing switch, withdraw an application, delete Face ID, export data, delete history or account | Consent, sharing switch, withdraw and Face ID on backend; export and deletion in browser | ✅ Done · ⏳ deletion on the server |
 | 13 | Deployment | Hosted demo | Not started | ⏳ Planned |
 
@@ -59,7 +59,7 @@ flowchart LR
 
     subgraph Server["FastAPI server"]
         API["REST API under /api<br/>JWT auth, role checks"]
-        SVC["Services<br/>auth, face matching, jobs, suitability score"]
+        SVC["Services<br/>auth, face matching, jobs, CV match, admin configuration"]
         ORM["SQLAlchemy 2.0 + Alembic"]
         API --> SVC --> ORM
     end
@@ -133,9 +133,10 @@ The sign-in page has a **Demo account** box that fills these in. The accounts ar
 ### Done
 
 - **Authentication.** Landing page, sign up, and two-step sign in with a password **or** Face ID, served by the real backend.
-- **Employer module on the real backend.** Job postings, applications with consent, and candidates ranked by an explainable suitability score.
+- **Employer module on the real backend.** Job postings, applications with consent, and candidates ranked by CV skill match, with no interview data shown to employers.
 - **CV analyzer.** PDF, DOCX or pasted text; editable extracted skills; weighted skill gap against a role or a job description.
 - **Mock interviews.** Text, voice and video; a session plan that explains why each question was picked; follow-up questions; presentation cues in video mode.
+- **Admin console on the real backend.** With the `admin` module on, the admin screens save domains, roles, skills, question templates, criteria and scoring rules to PostgreSQL. Changes apply to the next interview, CV match and employer list, and server messages such as "Skill is used by a role" are shown as they are.
 - **Dashboards.** Candidate overview and progress, employer hiring overview, admin configuration.
 - **Privacy.** Consent when applying, a sharing switch that the server enforces, withdrawal, and deletion of Face ID. Data export and deletion of history or the account work on the browser copy.
 - **Light and dark themes**, responsive layout.
@@ -146,8 +147,7 @@ The sign-in page has a **Demo account** box that fills these in. The accounts ar
 2. Move CV parsing and job-description parsing to the server.
 3. Send recorded audio to Whisper instead of using the browser's speech recognition.
 4. Load and save interview sessions through the server so history follows the candidate across devices.
-5. Save admin configuration changes to PostgreSQL.
-6. Add server-side deletion of an account and its history.
+5. Add server-side deletion of an account and its history.
 7. Replace the Face ID matcher with a face-embedding model and add password reset.
 8. Deploy, then run user testing with students.
 
@@ -159,7 +159,7 @@ These are stated plainly so the evaluation reflects what is really built.
 - **Face matching is a prototype.** The browser measures ratios between face landmarks and the server compares them against a threshold. The blink check stops a printed photo, but this is not a trained face-recognition model and has not been measured for false accepts. The password always remains available.
 - **CV parsing and interviews still run in the browser.** The full CV, answer text and session history are kept in this browser's `localStorage`. They do not follow the user to another browser or device, and clearing site data removes them. Only skills, a CV summary and per-answer scores (with the video cues) are copied to the database, for the employer ranking.
 - **Deleting history or the account only clears the browser copy.** The account and the scores already copied to PostgreSQL stay there until a server-side delete endpoint is added. Turning off the sharing switch does hide the candidate from employers on the server straight away.
-- **Admin edits are saved in the browser.** A change on the admin screens applies to the candidate pages in the same browser. It is not yet written to PostgreSQL, so it does not change the employer ranking, which uses the server's configuration.
+- **Admin edits are saved in the browser unless the `admin` module is on.** Without it, a change on the admin screens applies only in this browser and not to the server-side employer list or interviews.
 - **Voice and video need Chrome or Edge.** The Web Speech API is not available in every browser.
 - **CV parsing uses fixed rules.** Unusual layouts and scanned PDFs (images without selectable text) are not read. The extracted skills can be corrected by hand.
 - **Presentation cues are observations, not judgments.** Eye contact and expressiveness are shown to the candidate only. The API never returns them to employers.
@@ -170,7 +170,7 @@ These are stated plainly so the evaluation reflects what is really built.
 Two settings in `.env` control where each module runs. Restart `npm run dev` after changing them.
 
 ```
-VITE_BACKEND_MODULES=auth,employer,candidate
+VITE_BACKEND_MODULES=auth,employer,candidate,admin
 VITE_API_URL=http://localhost:8000/api
 ```
 
@@ -182,14 +182,15 @@ VITE_API_URL=http://localhost:8000/api
 | Module | What goes to the backend |
 |---|---|
 | `auth` | Account lookup, sign up, sign in (password or Face ID), Face ID enrol/delete, current user. The JWT is stored in the browser; a `401` signs the user out. |
-| `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking. Also copies the candidate's skills, CV summary and session scores to the server. Needs `auth`. |
+| `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking by CV skill match. Also copies the candidate's skills and CV summary to the server. Needs `auth`. |
 | `candidate` | CV upload and edits (`/cv`), job-description parsing and skill-gap match (`/jd/parse`, `/cv/match`), the mock interview (`/interviews`: server-chosen questions, Gemini or rule-based scoring, Whisper transcription of voice and video answers, follow-ups, finish), and progress. With it on, the profile and session copy described for `employer` is no longer sent. Needs `auth`. |
+| `admin` | The admin console (`/api/admin/*`): domains, roles, skills, question templates, evaluation criteria, scoring rules, the user list and overview counts. Admin accounts only; needs `auth`. |
 
 How the two sides fit together:
 
 - After a backend sign-in or sign-up, the returned user is copied into the local store under the same id, so the candidate pages that still read the local store keep working.
 - With `employer` on, the candidate's **Job Matches** page lists jobs from the backend and applies or withdraws through it, so employers see real applicants.
-- The suitability score is calculated by the backend from its database. When a candidate finishes a session, edits their CV skills or applies, the frontend sends the skills, CV summary and per-answer scores. CV text, contact details and answer text are not sent.
+- The employer's CV match is calculated by the backend from its database. When a candidate edits their CV skills or applies, the frontend sends the skills and CV summary. Employers never receive interview data. CV text, contact details and answer text are not sent.
 - With `candidate` on, a slow or failed AI call shows a friendly message after about 30 seconds with a **Try again** button. If speech-to-text is unavailable on the server (503), the browser's live transcript is sent as text instead.
 - If the backend is not running, the app shows "Can't reach the server — is the backend running?" instead of failing.
 
@@ -202,7 +203,7 @@ src/
   api.js          Service layer: routes each call to the backend or the local store, per module
   store.jsx       App-wide store backed by localStorage (also the cache for backend data)
   data.js         Demo seed and admin configuration
-  lib.js          Scoring, matching and suitability logic used by the local modules
+  lib.js          Scoring and matching logic used by the local modules
   cvParser.js     CV text extraction (PDF, DOCX, TXT) and CV / job-description parsing
   faceCues.js     MediaPipe face landmarks: Face ID geometry, blink, eye contact, expressiveness
   useSpeech.js    Speech to text with the Web Speech API

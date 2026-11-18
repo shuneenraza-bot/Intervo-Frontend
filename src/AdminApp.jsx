@@ -1,14 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials, plural, uid } from "./lib";
-import { Card, Empty, Modal, Note, PageHeader, Segmented, Stat, Switch, Weight } from "./ui";
+import * as api from "./api";
+import { formatDate, initials, plural } from "./lib";
+import { Card, Empty, Modal, Note, PageHeader, Segmented, Stat, Weight } from "./ui";
 
 /*
  * Admin console — database-driven configuration (proposal objective 9).
  * Every change here is used immediately by the candidate and employer portals.
+ * With the admin backend module on, each change is saved through /api/admin/* (see api.js);
+ * server messages such as "Skill is used by a role" are shown as they come.
  */
 export default function AdminApp({ page, go }) {
+  const { notify } = useStore();
+  // Backend mode: read the current configuration, users and counts when the console opens and on each page change.
+  useEffect(() => {
+    api.loadAdminData().catch((e) => notify(e.message, "bad"));
+  }, [page, notify]);
   return (
     <>
       {page === "overview" && <AdminOverview go={go} />}
@@ -26,20 +34,21 @@ const splitList = (s) => s.split(",").map((x) => x.trim()).filter(Boolean);
 function AdminOverview({ go }) {
   const { db, resetDemo } = useStore();
   const c = db.config;
+  const stats = api.adminStats(db);
   const tiles = [
     { page: "domains", icon: "layers", label: "Domains & roles", value: `${c.domains.length} / ${c.roles.length}`, text: "Group roles by domain and set required skills with weights." },
     { page: "skills", icon: "tag", label: "Skills", value: c.skills.length, text: "Aliases for CV extraction, related skills for partial matches, coaching tips." },
     { page: "questions", icon: "book", label: "Question templates", value: c.questions.length, text: "Per-skill questions with expected key points and follow-ups." },
-    { page: "criteria", icon: "sliders", label: "Criteria & rules", value: c.criteria.filter((x) => x.enabled).length, text: "Rubric weights, weakness threshold and suitability weights." },
+    { page: "criteria", icon: "sliders", label: "Criteria & rules", value: c.criteria.filter((x) => x.enabled).length, text: "Rubric weights, weakness threshold, follow-ups and Face ID rules." },
   ];
   return (
     <>
       <PageHeader kicker="Admin console" title="Configuration" subtitle="New roles, skills and questions are added here as data — no changes to application code." />
       <section className="stats">
-        <Stat label="Candidates" value={db.users.filter((u) => u.role === "candidate").length} hint="Registered accounts" icon="user" accent="blue" />
-        <Stat label="Employers" value={db.users.filter((u) => u.role === "employer").length} hint="Registered accounts" icon="building" accent="violet" />
-        <Stat label="Sessions" value={db.sessions.length} hint="Interviews completed" icon="mic" accent="green" />
-        <Stat label="Open jobs" value={db.jobs.filter((j) => j.status === "open").length} hint={plural(db.applications.length, "application")} icon="briefcase" accent="amber" />
+        <Stat label="Candidates" value={stats.candidates} hint="Registered accounts" icon="user" accent="blue" />
+        <Stat label="Employers" value={stats.employers} hint="Registered accounts" icon="building" accent="violet" />
+        <Stat label="Sessions" value={stats.sessions} hint="Interviews completed" icon="mic" accent="green" />
+        <Stat label="Open jobs" value={stats.openJobs} hint={plural(stats.applications, "application")} icon="briefcase" accent="amber" />
       </section>
       <div className="tile-grid">
         {tiles.map((t) => (
@@ -52,13 +61,15 @@ function AdminOverview({ go }) {
           </button>
         ))}
       </div>
-      <Card title="Prototype data" subtitle="Everything is stored in this browser until the PostgreSQL backend is connected" className="mt">
-        <div className="btn-row">
-          <button className="btn btn--ghost btn--danger-outline" onClick={() => window.confirm("Reset all data to the demo seed? This signs you out.") && resetDemo()}>
-            <Icon name="refresh" size={15} /> Reset demo data
-          </button>
-        </div>
-      </Card>
+      {!api.uses("admin") && (
+        <Card title="Prototype data" subtitle="Everything is stored in this browser until the PostgreSQL backend is connected" className="mt">
+          <div className="btn-row">
+            <button className="btn btn--ghost btn--danger-outline" onClick={() => window.confirm("Reset all data to the demo seed? This signs you out.") && resetDemo()}>
+              <Icon name="refresh" size={15} /> Reset demo data
+            </button>
+          </div>
+        </Card>
+      )}
     </>
   );
 }
@@ -66,33 +77,24 @@ function AdminOverview({ go }) {
 /* ---------------- Domains & roles ---------------- */
 
 function DomainsRoles() {
-  const { db, update, notify } = useStore();
+  const { db, notify } = useStore();
   const [domainName, setDomainName] = useState("");
   const [editing, setEditing] = useState(null);
   const { domains, roles } = db.config;
 
+  const run = (action, success) => action.then(() => success && notify(success)).catch((e) => notify(e.message, "bad"));
+
   function addDomain(e) {
     e.preventDefault();
     const name = domainName.trim();
-    if (!name || domains.some((d) => d.name.toLowerCase() === name.toLowerCase())) return;
-    update((d) => { d.config.domains.push({ id: uid("dom"), name }); });
-    setDomainName("");
-    notify(`Domain "${name}" added`);
+    if (!name) return;
+    api.addDomain(name).then(() => { setDomainName(""); notify(`Domain "${name}" added`); }).catch((err) => notify(err.message, "bad"));
   }
 
-  function removeDomain(id) {
-    if (roles.some((r) => r.domainId === id)) return notify("Move or delete this domain's roles first", "bad");
-    update((d) => { d.config.domains = d.config.domains.filter((x) => x.id !== id); });
-  }
+  const removeDomain = (id) => run(api.removeDomain(id));
 
   function saveRole(role) {
-    update((d) => {
-      const i = d.config.roles.findIndex((r) => r.id === role.id);
-      if (i >= 0) d.config.roles[i] = role;
-      else d.config.roles.push({ ...role, id: uid("role") });
-    });
-    notify("Role saved — available to candidates now");
-    setEditing(null);
+    api.saveRole(role).then(() => { notify("Role saved — available to candidates now"); setEditing(null); }).catch((e) => notify(e.message, "bad"));
   }
 
   return (
@@ -126,7 +128,7 @@ function DomainsRoles() {
                 <div className="chips">{r.skills.map((s) => <span className="chip" key={s.name}>{s.name}<Weight w={s.weight} /></span>)}</div>
                 <div className="btn-row">
                   <button className="icon-btn icon-btn--sm" onClick={() => setEditing(r)} aria-label="Edit role"><Icon name="edit" size={15} /></button>
-                  <button className="icon-btn icon-btn--sm" onClick={() => update((d) => { d.config.roles = d.config.roles.filter((x) => x.id !== r.id); })} aria-label="Delete role"><Icon name="trash" size={15} /></button>
+                  <button className="icon-btn icon-btn--sm" onClick={() => run(api.removeRole(r.id))} aria-label="Delete role"><Icon name="trash" size={15} /></button>
                 </div>
               </div>
             ))}
@@ -184,29 +186,17 @@ function RoleEditor({ role, onClose, onSave }) {
 /* ---------------- Skills ---------------- */
 
 function Skills() {
-  const { db, update, notify } = useStore();
+  const { db, notify } = useStore();
   const [editing, setEditing] = useState(null);
   const [q, setQ] = useState("");
   const list = db.config.skills.filter((s) => s.name.toLowerCase().includes(q.toLowerCase()));
 
   function save(skill, originalName) {
-    update((d) => {
-      const i = d.config.skills.findIndex((s) => s.name === originalName);
-      if (i >= 0) d.config.skills[i] = skill;
-      else d.config.skills.push(skill);
-    });
-    notify("Skill saved");
-    setEditing(null);
+    // Server errors (e.g. a duplicate name) are shown in the editor so the admin can fix them.
+    return api.saveSkill(skill, originalName).then(() => { notify("Skill saved"); setEditing(null); });
   }
 
-  function remove(name) {
-    const used = db.config.roles.some((r) => r.skills.some((s) => s.name === name)) || db.jobs.some((j) => j.skills.some((s) => s.name === name));
-    if (used) return notify(`"${name}" is used by a role or job`, "bad");
-    update((d) => {
-      d.config.skills = d.config.skills.filter((s) => s.name !== name);
-      d.config.questions = d.config.questions.filter((x) => x.skill !== name);
-    });
-  }
+  const remove = (skill) => api.removeSkill(skill).catch((e) => notify(e.message, "bad"));
 
   return (
     <>
@@ -227,7 +217,7 @@ function Skills() {
               <span>{db.config.questions.filter((x) => x.skill === s.name).length}</span>
               <span className="btn-row btn-row--end">
                 <button className="icon-btn icon-btn--sm" onClick={() => setEditing(s)} aria-label="Edit"><Icon name="edit" size={15} /></button>
-                <button className="icon-btn icon-btn--sm" onClick={() => remove(s.name)} aria-label="Delete"><Icon name="trash" size={15} /></button>
+                <button className="icon-btn icon-btn--sm" onClick={() => remove(s)} aria-label="Delete"><Icon name="trash" size={15} /></button>
               </span>
             </div>
           ))}
@@ -249,7 +239,7 @@ function SkillEditor({ skill, onClose, onSave }) {
     const n = name.trim();
     if (!n) return setError("Name is required.");
     if (n !== skill.name && db.config.skills.some((s) => s.name.toLowerCase() === n.toLowerCase())) return setError("A skill with this name exists.");
-    onSave({ name: n, aliases: splitList(aliases.toLowerCase()), related, tip: tip.trim() }, skill.name);
+    Promise.resolve(onSave({ ...skill, name: n, aliases: splitList(aliases.toLowerCase()), related, tip: tip.trim() }, skill.name)).catch((e) => setError(e.message));
   }
   return (
     <Modal open onClose={onClose} title={skill.name ? `Edit ${skill.name}` : "New skill"}
@@ -276,19 +266,13 @@ function SkillEditor({ skill, onClose, onSave }) {
 /* ---------------- Question templates ---------------- */
 
 function Questions() {
-  const { db, update, notify } = useStore();
+  const { db, notify } = useStore();
   const [skill, setSkill] = useState("All");
   const [editing, setEditing] = useState(null);
   const list = db.config.questions.filter((q) => skill === "All" || q.skill === skill);
 
   function save(q) {
-    update((d) => {
-      const i = d.config.questions.findIndex((x) => x.id === q.id);
-      if (i >= 0) d.config.questions[i] = q;
-      else d.config.questions.push({ ...q, id: uid("q") });
-    });
-    notify("Question template saved");
-    setEditing(null);
+    return api.saveQuestion(q).then(() => { notify("Question template saved"); setEditing(null); });
   }
 
   return (
@@ -309,7 +293,7 @@ function Questions() {
               <div className="chips"><span className="chip chip--brand">{q.skill}</span><span className="chip">{q.type === "behavioral" ? "Behavioural" : "Technical"}</span></div>
               <div className="btn-row">
                 <button className="icon-btn icon-btn--sm" onClick={() => setEditing(q)} aria-label="Edit"><Icon name="edit" size={15} /></button>
-                <button className="icon-btn icon-btn--sm" onClick={() => update((d) => { d.config.questions = d.config.questions.filter((x) => x.id !== q.id); })} aria-label="Delete"><Icon name="trash" size={15} /></button>
+                <button className="icon-btn icon-btn--sm" onClick={() => api.removeQuestion(q.id).catch((e) => notify(e.message, "bad"))} aria-label="Delete"><Icon name="trash" size={15} /></button>
               </div>
             </div>
             <p className="q-card__text">{q.text}</p>
@@ -333,7 +317,7 @@ function QuestionEditor({ q, onClose, onSave }) {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   return (
     <Modal open wide onClose={onClose} title={q.id ? "Edit template" : "New question template"}
-      footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" onClick={() => (form.text.trim().length < 10 ? setError("Write the question.") : onSave({ ...form, text: form.text.trim(), followUp: form.followUp.trim(), keywords: splitList(form.keywords.toLowerCase()) }))}>Save template</button></>}>
+      footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" onClick={() => (form.text.trim().length < 10 ? setError("Write the question.") : Promise.resolve(onSave({ ...form, text: form.text.trim(), followUp: form.followUp.trim(), keywords: splitList(form.keywords.toLowerCase()) })).catch((e) => setError(e.message)))}>Save template</button></>}>
       <div className="form">
         <div className="form__grid">
           <div className="field"><label>Skill</label>
@@ -355,27 +339,27 @@ function QuestionEditor({ q, onClose, onSave }) {
 /* ---------------- Criteria & rules ---------------- */
 
 function CriteriaRules() {
-  const { db, update, notify } = useStore();
+  const { db, notify } = useStore();
   const { criteria, rules } = db.config;
-  const setRule = (k, v) => update((d) => { d.config.rules[k] = v; });
-  const setSuit = (k, v) => update((d) => { d.config.rules.suitability[k] = v; });
-  const suitTotal = rules.suitability.cv + rules.suitability.interview + rules.suitability.consistency;
+  const fail = (e) => notify(e.message, "bad");
+  const setRule = (k, v) => api.setRules({ [k]: v }).catch(fail);
+  const setCriterion = (key, patch) => api.setCriterion(key, patch).catch(fail);
 
   return (
     <>
-      <PageHeader kicker="Configuration" title="Criteria & rules" subtitle="The rubric used to score every answer and the rules behind weakness detection and employer suitability." />
+      <PageHeader kicker="Configuration" title="Criteria & rules" subtitle="The rubric used to score every answer and the rules behind weakness detection, follow-ups and Face ID." />
       <div className="grid grid--split">
         <Card title="Evaluation criteria" subtitle="Weights in the answer score">
           <div className="crit-list">
-            {criteria.map((c, i) => (
+            {criteria.map((c) => (
               <div className={`crit ${c.enabled ? "" : "is-off"}`} key={c.key}>
                 <div className="crit__main">
                   <strong>{c.label}</strong>
                   <span>{c.appliesTo === "all" ? "All questions" : c.appliesTo === "technical" ? "Technical questions" : "Behavioural questions"}</span>
                 </div>
-                <Segmented options={[1, 2, 3].map((w) => ({ value: w, label: `×${w}` }))} value={c.weight} onChange={(w) => update((d) => { d.config.criteria[i].weight = w; })} />
+                <Segmented options={[1, 2, 3].map((w) => ({ value: w, label: `×${w}` }))} value={c.weight} onChange={(w) => setCriterion(c.key, { weight: w })} />
                 <label className="mini-switch" aria-label={`Enable ${c.label}`}>
-                  <input type="checkbox" checked={c.enabled} onChange={(e) => update((d) => { d.config.criteria[i].enabled = e.target.checked; })} />
+                  <input type="checkbox" checked={c.enabled} onChange={(e) => setCriterion(c.key, { enabled: e.target.checked })} />
                   <span />
                 </label>
               </div>
@@ -390,12 +374,6 @@ function CriteriaRules() {
             <NumberRule label="Follow-up trigger" hint="Ask a follow-up when completeness is below" value={rules.followUpBelow} suffix="%" min={30} max={80} step={5} onChange={(v) => setRule("followUpBelow", v)} />
             <NumberRule label="Default questions" hint="Questions per session" value={rules.defaultQuestions} min={3} max={6} step={1} onChange={(v) => setRule("defaultQuestions", v)} />
             <NumberRule label="Face match threshold" hint="Minimum similarity to accept a face" value={rules.faceThreshold} min={0.3} max={0.9} step={0.05} onChange={(v) => setRule("faceThreshold", +v.toFixed(2))} />
-          </Card>
-          <Card title="Suitability weights" subtitle={`Total ${suitTotal}% ${suitTotal === 100 ? "" : "· normalised automatically"}`}>
-            <NumberRule label="CV skill match" value={rules.suitability.cv} suffix="%" min={0} max={100} step={5} onChange={(v) => setSuit("cv", v)} />
-            <NumberRule label="Interview evidence" value={rules.suitability.interview} suffix="%" min={0} max={100} step={5} onChange={(v) => setSuit("interview", v)} />
-            <NumberRule label="Practice consistency" value={rules.suitability.consistency} suffix="%" min={0} max={100} step={5} onChange={(v) => setSuit("consistency", v)} />
-            <button className="btn btn--text" onClick={() => { update((d) => { d.config.rules.suitability = { cv: 40, interview: 45, consistency: 15 }; }); notify("Weights reset"); }}>Reset to 40 / 45 / 15</button>
           </Card>
         </div>
       </div>
@@ -421,7 +399,7 @@ function NumberRule({ label, hint, value, suffix = "", min, max, step, onChange 
 function Users() {
   const { db } = useStore();
   const [role, setRole] = useState("all");
-  const list = db.users.filter((u) => role === "all" || u.role === role);
+  const list = api.adminUsers(db).filter((u) => role === "all" || u.role === role);
   return (
     <>
       <PageHeader kicker="Accounts" title="Users" subtitle="Role-based access: candidates, employers and administrators." />
@@ -436,9 +414,9 @@ function Users() {
               <div className="table__row" role="row" key={u.id}>
                 <span className="user-cell"><span className="avatar avatar--sm">{initials(u.name)}</span><span><strong>{u.name}</strong><small>{u.email}</small></span></span>
                 <span><span className={`role-pill role-pill--${u.role}`}>{u.role}</span></span>
-                <span>{u.face?.template ? <span className="badge badge--good">Enrolled</span> : <span className="badge badge--muted">Not set</span>}</span>
+                <span>{u.faceEnrolled ? <span className="badge badge--good">Enrolled</span> : <span className="badge badge--muted">Not set</span>}</span>
                 <span className="table__muted">
-                  {u.role === "candidate" ? plural(db.sessions.filter((s) => s.userId === u.id).length, "session") : u.role === "employer" ? plural(db.jobs.filter((j) => j.employerId === u.id).length, "job") : "—"}
+                  {u.role === "candidate" ? plural(u.sessions, "session") : u.role === "employer" ? plural(u.jobs, "job") : "—"}
                 </span>
                 <span className="table__muted">{formatDate(u.createdAt)}</span>
               </div>

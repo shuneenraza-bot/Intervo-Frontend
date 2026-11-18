@@ -43,7 +43,7 @@ export default function JobsPage({ user, db, profile, applications, go }) {
   async function apply() {
     try {
       await api.applyToJob({ jobId: applying.id, candidateId: user.id, consent });
-      notify(consent ? `Applied — ${applying.company} can now see your results` : "Application sent without sharing results");
+      notify(consent ? `Applied — ${applying.company} can now see your CV match` : "Application sent without sharing your CV match");
       setApplying(null);
     } catch (e) {
       notify(e.message, "bad");
@@ -137,18 +137,18 @@ export default function JobsPage({ user, db, profile, applications, go }) {
       >
         {applying && (
           <>
-            <p className="muted">The employer will see a suitability score built from three factors. Nothing is shared unless you agree.</p>
+            <p className="muted">The employer will see how well your CV skills match this job. Your interview scores and practice history are never shared with employers.</p>
             <ul className="share-list">
-              <li><Icon name="file" size={16} /> Skills from your CV analysis</li>
-              <li><Icon name="mic" size={16} /> Per-skill interview scores (not your raw answers)</li>
-              <li><Icon name="chart" size={16} /> Number of sessions and improvement trend</li>
+              <li><Icon name="file" size={16} /> Matched, partial and missing skills from your CV analysis</li>
+              <li><Icon name="chart" size={16} /> A short CV summary: top degree, years of experience, number of projects</li>
+              <li><Icon name="user" size={16} /> Your name and email</li>
             </ul>
             <label className="check check--box">
               <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
               <span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>
-              <span>I agree to share this evidence with <b>{applying.company}</b>. I can withdraw at any time from Profile & Privacy.</span>
+              <span>I agree to share this CV match with <b>{applying.company}</b>. I can withdraw at any time from Profile & Privacy.</span>
             </label>
-            {!consent && <p className="field__hint">Without consent the employer only sees that you applied.</p>}
+            {!consent && <p className="field__hint">Without consent the employer only sees that you applied, with no details.</p>}
           </>
         )}
       </Modal>
