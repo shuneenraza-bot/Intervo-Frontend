@@ -44,17 +44,19 @@ export function Shell({ page, go, menuOpen, setMenuOpen, badges = {}, promo, chi
           <Brand subtitle={SUBTITLE[user.role]} />
           <button className="icon-btn sidebar__close" onClick={() => setMenuOpen(false)} aria-label="Close menu"><Icon name="x" /></button>
         </div>
-        <p className="sidebar__label">Menu</p>
-        <nav className="nav" aria-label="Main">
-          {items.map((item) => (
-            <button key={item.id} className={`nav__item ${page === item.id ? "is-active" : ""}`} onClick={() => go(item.id)} aria-current={page === item.id ? "page" : undefined}>
-              <Icon name={item.icon} size={18} />
-              <span>{item.label}</span>
-              {badges[item.id] > 0 && <span className="nav__count">{badges[item.id]}</span>}
-            </button>
-          ))}
-        </nav>
-        {promo}
+        <div className="sidebar__scroll" data-lenis-prevent>
+          <p className="sidebar__label">Menu</p>
+          <nav className="nav" aria-label="Main">
+            {items.map((item) => (
+              <button key={item.id} className={`nav__item ${page === item.id ? "is-active" : ""}`} onClick={() => go(item.id)} aria-current={page === item.id ? "page" : undefined}>
+                <Icon name={item.icon} size={18} />
+                <span>{item.label}</span>
+                {badges[item.id] > 0 && <span className="nav__count">{badges[item.id]}</span>}
+              </button>
+            ))}
+          </nav>
+          {promo}
+        </div>
         <div className="sidebar__user">
           <span className="avatar">{initials(user.name)}</span>
           <div className="sidebar__user-text">

@@ -33,8 +33,15 @@ export default function ApplicationsPage({ go }) {
   const local = useMemo(() => api.getMyApplicationsSync(db), [db]);
   const apps = remote ? fetched : local;
 
+  const [error, setError] = useState(null);
+
   const load = useCallback(() => {
-    if (remote) api.getMyApplications().then(setFetched).catch((e) => notify(e.message, "bad"));
+    if (!remote) return;
+    setError(null);
+    api.getMyApplications().then(setFetched).catch((e) => {
+      setError(e?.message || "Could not load your applications.");
+      notify(e?.message || "Could not load your applications.", "bad");
+    });
   }, [remote, notify]);
   useEffect(load, [load]);
 
@@ -65,7 +72,12 @@ export default function ApplicationsPage({ go }) {
     <>
       <PageHeader kicker="Applications" title="My Applications" subtitle="Where each application stands. When an employer shortlists you, you decide whether to share your contact details." />
 
-      {apps === null ? (
+      {error && apps === null ? (
+        <Card>
+          <p role="alert">{error}</p>
+          <div className="btn-row"><button className="btn btn--primary" onClick={load}>Try again</button></div>
+        </Card>
+      ) : apps === null ? (
         <Card><p className="muted">Loading your applications…</p></Card>
       ) : apps.length ? (
         <div className="app-list">
