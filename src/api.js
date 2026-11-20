@@ -7,7 +7,7 @@
  *   VITE_BACKEND_MODULES = "auth,employer,candidate,admin" → the listed modules call the FastAPI
  *                                            backend at API_URL with a JWT bearer token; the rest stay local.
  *
- *   auth      lookup, signup, login (password or face), face enrol/delete, me
+ *   auth      two-factor sign in: signup / login (password) → face enrol or verify → full token; me, re-enrol face
  *   employer  config, jobs, apply/withdraw, application status, candidate ranking,
  *             plus the candidate sync (profile and finished sessions) that the ranking reads
  *   candidate CV analysis and editing, JD parsing and skill-gap match, the mock interview
@@ -101,11 +101,11 @@ const OFFLINE = "Can't reach the server — is the backend running?";
 const TIMEOUT = "The AI is taking longer than usual. Please try again.";
 const AI_TIMEOUT = 30000; // ms: one Gemini evaluation, with its own retry on the server
 const SLOW_TIMEOUT = 45000; // ms: CV analysis, question planning and audio (upload + Whisper + evaluation)
-const PUBLIC_PATHS = ["/auth/lookup", "/auth/login", "/auth/signup"]; // a 401 here is a wrong password, not an expired session
+// A 401 on these is a wrong password / wrong face / expired pending token, not an expired session.
+const PUBLIC_PATHS = ["/auth/login", "/auth/signup", "/auth/face/verify", "/auth/face/enroll"];
 
-async function request(method, path, body, { timeout = 0 } = {}) {
+async function request(method, path, body, { timeout = 0, token = getToken() } = {}) {
   const headers = { Accept: "application/json" };
-  const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   let payload;
   if (body instanceof FormData) payload = body; // browser sets the multipart boundary
@@ -171,69 +171,153 @@ function findAccount(email, role) {
   return found;
 }
 
-/** Sign-in step 1. Resolves with { faceEnabled } so the UI knows whether to offer Face ID. */
-export async function lookupAccount({ email, role }) {
+/* Two-factor sign in. Step 1 (startLogin / startSignup) proves the password and leaves a
+ * "face pending" session here, in memory only. Step 2 (completeFace) enrols or verifies the face
+ * and only then returns a user and stores the full token. Nothing is signed in before that. */
+let pending = null; // { token (backend) | userId (local), faceEnrolled, expiresAt }
+const PENDING_MS = 5 * 60 * 1000;
+const PENDING_EXPIRED = "Your sign-in timed out. Enter your password again.";
+
+/** Local-mode counterpart of the server's attempt limits: password 5 → 60 s, face 3 → 5 min. */
+const LOCAL_GUARD_KEY = "intervo.localGuard";
+function localGuard(userId) {
+  try {
+    return (JSON.parse(localStorage.getItem(LOCAL_GUARD_KEY)) || {})[userId] || { pw: 0, face: 0, until: 0 };
+  } catch {
+    return { pw: 0, face: 0, until: 0 };
+  }
+}
+function setLocalGuard(userId, g) {
+  try {
+    const all = JSON.parse(localStorage.getItem(LOCAL_GUARD_KEY)) || {};
+    all[userId] = g;
+    localStorage.setItem(LOCAL_GUARD_KEY, JSON.stringify(all));
+  } catch {
+    /* storage blocked */
+  }
+}
+function localBlocked(g) {
+  const left = Math.ceil((g.until - Date.now()) / 1000);
+  if (left > 0) throw new ApiError(`Too many attempts. Try again in ${left} seconds.`, 429, left);
+}
+
+/** True when a face-step error means "go back to the password step" (expired, spent or blocked). */
+export const needsPassword = (err) => err?.status === 429 || (err?.status === 401 && !/didn't match/i.test(err.message));
+
+/**
+ * Sign-in step 1: email + role + password. Resolves with { faceEnrolled }; the face step
+ * (completeFace) must follow. Throws 401 (wrong password), 404 (no account) or 429 (blocked).
+ */
+export async function startLogin({ email, role, password }) {
   const normalised = email.trim().toLowerCase();
-  if (uses("auth")) return request("POST", "/auth/lookup", { email: normalised, role });
-  return { faceEnabled: isLandmarkTemplate(findAccount(normalised, role).face?.template) };
+  if (uses("auth")) {
+    const res = await request("POST", "/auth/login", { email: normalised, role, password });
+    pending = { token: res.pendingToken, faceEnrolled: res.faceEnrolled, expiresAt: Date.now() + res.expiresIn * 1000 };
+    return { faceEnrolled: res.faceEnrolled };
+  }
+  const found = findAccount(normalised, role);
+  const g = localGuard(found.id);
+  localBlocked(g);
+  if ((await hashPassword(found.id, password)) !== found.passwordHash) {
+    const pw = g.pw + 1;
+    if (pw >= 5) {
+      setLocalGuard(found.id, { ...g, pw: 0, until: Date.now() + 60_000 });
+      throw new ApiError("Too many attempts. Try again in 60 seconds.", 429, 60);
+    }
+    setLocalGuard(found.id, { ...g, pw });
+    throw new ApiError("Incorrect password.", 401);
+  }
+  setLocalGuard(found.id, { pw: 0, face: 0, until: 0 });
+  const faceEnrolled = isLandmarkTemplate(found.face?.template);
+  pending = { userId: found.id, faceEnrolled, expiresAt: Date.now() + PENDING_MS };
+  return { faceEnrolled };
 }
 
 /**
- * Sign-in step 2 with ONE method: pass `password`, or `faceTemplate` (the live landmark
- * template from a blink-verified FaceCapture). Resolves with the signed-in user.
+ * Creates a candidate or employer account WITHOUT a face and opens the face step (enrolment).
+ * The account can't be used until completeFace has enrolled a face.
  */
-export async function login({ email, role, password, faceTemplate, remember = true }) {
-  const normalised = email.trim().toLowerCase();
-  const method = faceTemplate ? "face" : "password";
-  if (uses("auth")) {
-    const body = faceTemplate ? { email: normalised, role, faceTemplate } : { email: normalised, role, password };
-    const { token, user } = await request("POST", "/auth/login", body);
-    setToken(token, remember);
-    cacheUser(user);
-    return user;
-  }
-  const found = findAccount(normalised, role);
-  if (method === "password") {
-    if ((await hashPassword(found.id, password)) !== found.passwordHash) throw new ApiError("Incorrect password.", 401);
-  } else {
-    if (!isLandmarkTemplate(found.face?.template)) throw new ApiError("Face ID isn't set up for this account.", 400);
-    const { compareGeometry } = await import("./faceCues"); // already loaded by the face step
-    const threshold = getDb().config.rules.faceThreshold;
-    const sim = compareGeometry(faceTemplate.features, found.face.template.features);
-    if (sim < threshold) throw new ApiError(`Face didn't match this account (similarity ${sim.toFixed(2)}, needs ${threshold}).`, 401);
-  }
-  const lastLogin = { at: Date.now(), method };
-  write((d) => { d.users.find((u) => u.id === found.id).lastLogin = lastLogin; });
-  return { ...found, lastLogin };
-}
-
-/** Creates a candidate or employer account. `face` is the enrolment result or null. Resolves with the new user. */
-export async function signup({ role, name, email, company, password, dataConsent = false, face = null }) {
+export async function startSignup({ role, name, email, company, password, dataConsent = false }) {
   const body = {
     role, name: name.trim(), email: email.trim().toLowerCase(),
     company: role === "employer" ? company.trim() : undefined,
     password, dataConsent,
-    face: face ? { template: face.template } : null,
   };
   if (uses("auth")) {
-    const { token, user } = await request("POST", "/auth/signup", body);
-    setToken(token, true);
-    cacheUser(user);
-    return user;
+    const res = await request("POST", "/auth/signup", body);
+    pending = { token: res.pendingToken, faceEnrolled: false, expiresAt: Date.now() + res.expiresIn * 1000 };
+    return { faceEnrolled: false };
   }
   if (getDb().users.some((u) => u.email === body.email)) throw new ApiError("An account with this email already exists.", 409);
   const id = uid(role === "employer" ? "emp" : "cand");
   const user = {
     id, role, name: body.name, email: body.email, company: body.company,
-    passwordHash: await hashPassword(id, password), createdAt: Date.now(),
-    face: face ? { template: face.template, enrolledAt: Date.now() } : null,
-    lastLogin: { at: Date.now(), method: "signup" },
+    passwordHash: await hashPassword(id, password), createdAt: Date.now(), face: null, lastLogin: null,
   };
   write((d) => {
     d.users.push(user);
     if (role === "candidate") d.profiles[id] = { skills: [], shareWithEmployers: false, consentAt: Date.now() };
   });
-  return user;
+  pending = { userId: id, faceEnrolled: false, expiresAt: Date.now() + PENDING_MS };
+  return { faceEnrolled: false };
+}
+
+/**
+ * Step 2 of sign in and sign up: `template` is the live landmark template from FaceCapture.
+ * Enrols it when the account has no face, otherwise verifies it (the blink check has already
+ * passed in FaceCapture). Resolves with the signed-in user. Errors: 401 face mismatch (message
+ * says how many attempts are left), or 401/429 when the user must start again with the
+ * password (see needsPassword).
+ */
+export async function completeFace({ template, remember = true }) {
+  if (!pending || pending.expiresAt < Date.now()) {
+    pending = null;
+    throw new ApiError(PENDING_EXPIRED, 401);
+  }
+  const enrol = !pending.faceEnrolled;
+  if (uses("auth")) {
+    const path = enrol ? "/auth/face/enroll" : "/auth/face/verify";
+    const body = enrol ? { template } : { template, liveness: { blink: true } };
+    const { token, user } = await request("POST", path, body, { token: pending.token });
+    pending = null;
+    setToken(token, remember);
+    cacheUser(user);
+    return user;
+  }
+
+  const found = getDb().users.find((u) => u.id === pending.userId);
+  const now = Date.now();
+  let lastLogin;
+  if (enrol) {
+    lastLogin = { at: now, method: found.lastLogin ? "face" : "signup" };
+    write((d) => {
+      const u = d.users.find((x) => x.id === found.id);
+      u.face = { template, enrolledAt: now };
+      u.lastLogin = lastLogin;
+    });
+  } else {
+    const g = localGuard(found.id);
+    localBlocked(g);
+    const { compareGeometry } = await import("./faceCues"); // already loaded by the face step
+    const threshold = getDb().config.rules.faceThreshold;
+    const sim = compareGeometry(template.features, found.face.template.features);
+    if (sim < threshold) {
+      const face = g.face + 1;
+      if (face >= 3) {
+        setLocalGuard(found.id, { pw: 0, face: 0, until: now + 5 * 60_000 });
+        pending = null;
+        throw new ApiError("Too many attempts. Try again in 300 seconds.", 429, 300);
+      }
+      setLocalGuard(found.id, { ...g, face });
+      const left = 3 - face;
+      throw new ApiError(`Face didn't match this account. ${left} ${left === 1 ? "attempt" : "attempts"} left.`, 401);
+    }
+    setLocalGuard(found.id, { pw: 0, face: 0, until: 0 });
+    lastLogin = { at: now, method: "face" };
+    write((d) => { d.users.find((x) => x.id === found.id).lastLogin = lastLogin; });
+  }
+  pending = null;
+  return { ...found, lastLogin, face: enrol ? { template, enrolledAt: now } : found.face };
 }
 
 /**
@@ -251,16 +335,10 @@ export async function restoreSession() {
   return user;
 }
 
-/** Enrols or replaces the user's Face ID template. */
+/** Re-enrols: replaces the signed-in user's face template. A face can be replaced, never deleted. */
 export async function enrolFace(userId, template) {
   if (uses("auth")) return cacheUser(await request("PUT", "/auth/face", { template }));
   write((d) => { d.users.find((u) => u.id === userId).face = { template, enrolledAt: Date.now() }; });
-}
-
-/** Deletes the user's Face ID template. */
-export async function deleteFace(userId) {
-  if (uses("auth")) return cacheUser(await request("DELETE", "/auth/face"));
-  write((d) => { d.users.find((u) => u.id === userId).face = null; });
 }
 
 /* =========================================================
@@ -768,6 +846,16 @@ export function adminUsers(db) {
     sessions: db.sessions.filter((s) => s.userId === u.id).length,
     jobs: db.jobs.filter((j) => j.employerId === u.id).length,
   }));
+}
+
+/** Admin: clears a user's face so they enrol a new one at their next sign-in. */
+export async function resetFace(userId) {
+  if (uses("admin")) {
+    const row = await request("POST", `${ADMIN}/users/${byId(userId)}/reset-face`);
+    write((d) => { d.adminUsers = (d.adminUsers || []).map((u) => (u.id === row.id ? row : u)); });
+  } else {
+    write((d) => { d.users.find((u) => u.id === userId).face = null; });
+  }
 }
 
 /* ---- domains ---- */

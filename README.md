@@ -30,7 +30,7 @@ Status at the 30% evaluation. "Where it runs" matters because part of the system
 | # | Objective | Feature | Where it runs | Status |
 |---|---|---|---|---|
 | 1 | Secure, role-based access | Landing page, separate sign up, two-step sign in for candidate, employer and admin | Backend (JWT, argon2) | ✅ Done |
-| 2 | Convenient sign-in | Face ID as an alternative to the password, with a blink liveness check | Capture in browser (MediaPipe), matching on backend | ✅ Done (prototype matcher) |
+| 2 | Two-factor sign-in | Password first, then face verification with a blink liveness check, both required for every role at sign-up and sign-in | Capture in browser (MediaPipe), matching on backend | ✅ Done (prototype matcher) |
 | 3 | CV analysis and skill gap | Upload PDF/DOCX/TXT or paste text; extract skills, education, experience and projects; weighted match against a role template or a pasted job description | Browser (pdf.js) | ✅ Done in browser · ⏳ server-side with Gemini |
 | 4 | Mock interviews | Text, voice and video modes; questions chosen from weaknesses, CV gaps and the role's key skills; follow-up question when an answer is incomplete | Browser | ✅ Done in browser · ⏳ server-side |
 | 5 | Answer evaluation and feedback | Per-criterion scores against the admin rubric, with a STAR check for behavioral questions | Browser, rule-based | ✅ Rule-based · ⏳ Gemini evaluator |
@@ -40,7 +40,7 @@ Status at the 30% evaluation. "Where it runs" matters because part of the system
 | 9 | Job matching and applications | Candidates see match scores, apply with explicit consent and can withdraw | Backend | ✅ Done |
 | 10 | Employer module | Job postings with weighted skills and success criteria; candidates ranked by CV skill match only (never interview scores); shortlist or decline | Backend | ✅ Done |
 | 11 | Admin configuration | Domains and roles, skills, question templates, criteria and rules, users | Backend (`admin` module), or browser when it is off | ✅ Done |
-| 12 | Privacy controls | Consent when applying, sharing switch, withdraw an application, delete Face ID, export data, delete history or account | Consent, sharing switch, withdraw and Face ID on backend; export and deletion in browser | ✅ Done · ⏳ deletion on the server |
+| 12 | Privacy controls | Consent when applying, sharing switch, withdraw an application, re-enrol face, export data, delete history or account | Consent, sharing switch, withdraw and face re-enrolment on backend; export and deletion in browser | ✅ Done · ⏳ deletion on the server |
 | 13 | Deployment | Hosted demo | Not started | ⏳ Planned |
 
 ## Architecture
@@ -49,7 +49,7 @@ Status at the 30% evaluation. "Where it runs" matters because part of the system
 flowchart LR
     subgraph Browser["Browser"]
         UI["React 19 + Vite<br/>candidate, employer and admin portals"]
-        MP["MediaPipe Face Landmarker<br/>Face ID capture, blink check, video cues"]
+        MP["MediaPipe Face Landmarker<br/>Face verification capture, blink check, video cues"]
         PDF["pdf.js<br/>CV text extraction"]
         LS[("localStorage<br/>CV, interviews, admin edits")]
         UI --- MP
@@ -83,7 +83,7 @@ You need:
 - [Node.js](https://nodejs.org/) 20 or newer
 - [Python 3.13](https://www.python.org/downloads/) and [PostgreSQL 18](https://www.postgresql.org/download/windows/) for the backend
 - Git
-- Chrome or Edge, with a webcam and microphone for Face ID and the voice and video interviews
+- Chrome or Edge, with a webcam and microphone for face verification and the voice and video interviews
 
 ### 1. Backend first
 
@@ -132,13 +132,13 @@ The sign-in page has a **Demo account** box that fills these in. The accounts ar
 
 ### Done
 
-- **Authentication.** Landing page, sign up, and two-step sign in with a password **or** Face ID, served by the real backend.
+- **Authentication.** Landing page, sign up, and two-factor sign in (password, then face verification, both required), served by the real backend.
 - **Employer module on the real backend.** Job postings, applications with consent, and candidates ranked by CV skill match, with no interview data shown to employers.
 - **CV analyzer.** PDF, DOCX or pasted text; editable extracted skills; weighted skill gap against a role or a job description.
 - **Mock interviews.** Text, voice and video; a session plan that explains why each question was picked; follow-up questions; presentation cues in video mode.
 - **Admin console on the real backend.** With the `admin` module on, the admin screens save domains, roles, skills, question templates, criteria and scoring rules to PostgreSQL. Changes apply to the next interview, CV match and employer list, and server messages such as "Skill is used by a role" are shown as they are.
 - **Dashboards.** Candidate overview and progress, employer hiring overview, admin configuration.
-- **Privacy.** Consent when applying, a sharing switch that the server enforces, withdrawal, and deletion of Face ID. Data export and deletion of history or the account work on the browser copy.
+- **Privacy.** Consent when applying, a sharing switch that the server enforces, withdrawal, and re-enrolment of the face (no delete). Data export and deletion of history or the account work on the browser copy.
 - **Light and dark themes**, responsive layout.
 
 ### Next steps
@@ -148,7 +148,7 @@ The sign-in page has a **Demo account** box that fills these in. The accounts ar
 3. Send recorded audio to Whisper instead of using the browser's speech recognition.
 4. Load and save interview sessions through the server so history follows the candidate across devices.
 5. Add server-side deletion of an account and its history.
-7. Replace the Face ID matcher with a face-embedding model and add password reset.
+7. Replace the face matcher with a face-embedding model and add password reset.
 8. Deploy, then run user testing with students.
 
 ## Known limitations
@@ -181,7 +181,7 @@ VITE_API_URL=http://localhost:8000/api
 
 | Module | What goes to the backend |
 |---|---|
-| `auth` | Account lookup, sign up, sign in (password or Face ID), Face ID enrol/delete, current user. The JWT is stored in the browser; a `401` signs the user out. |
+| `auth` | Sign up, two-step sign in (password, then face enrol or verify), face re-enrol, current user. The JWT is stored in the browser; a `401` signs the user out. |
 | `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking by CV skill match. Also copies the candidate's skills and CV summary to the server. Needs `auth`. |
 | `candidate` | CV upload and edits (`/cv`), job-description parsing and skill-gap match (`/jd/parse`, `/cv/match`), the mock interview (`/interviews`: server-chosen questions, Gemini or rule-based scoring, Whisper transcription of voice and video answers, follow-ups, finish), and progress. With it on, the profile and session copy described for `employer` is no longer sent. Needs `auth`. |
 | `admin` | The admin console (`/api/admin/*`): domains, roles, skills, question templates, evaluation criteria, scoring rules, the user list and overview counts. Admin accounts only; needs `auth`. |
@@ -205,11 +205,11 @@ src/
   data.js         Demo seed and admin configuration
   lib.js          Scoring and matching logic used by the local modules
   cvParser.js     CV text extraction (PDF, DOCX, TXT) and CV / job-description parsing
-  faceCues.js     MediaPipe face landmarks: Face ID geometry, blink, eye contact, expressiveness
+  faceCues.js     MediaPipe face landmarks: face verification geometry, blink, eye contact, expressiveness
   useSpeech.js    Speech to text with the Web Speech API
   Landing.jsx     Public landing page
-  Auth.jsx        Sign in / sign up, Face ID
-  Camera.jsx      Camera capture for Face ID enrolment and verification
+  Auth.jsx        Sign in / sign up, face verification
+  Camera.jsx      Camera capture for face enrolment and verification
   CandidateApp.jsx, EmployerApp.jsx, AdminApp.jsx   The three portals
   CVPage.jsx, InterviewPage.jsx, JobsPage.jsx, ProgressPage.jsx, ProfilePage.jsx   Candidate pages
 docs/DEMO.md      Evaluation demo script

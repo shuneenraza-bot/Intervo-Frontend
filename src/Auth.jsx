@@ -44,56 +44,51 @@ export default function Auth({ view }) {
   );
 }
 
-/* ---------------- Attempt limits & remembered method ----------------
- * Client-side mirror of the limits the backend enforces (it answers 429 + Retry-After).
- * Face failures are per browser session; the password block survives a reload. */
+/* ---------------- Attempt limits ----------------
+ * Client-side mirror of the limits the backend enforces (it answers 429 + Retry-After):
+ * 5 wrong passwords → 60 s, 3 wrong faces → 5 min. The password counter survives a reload. */
 
-const MAX_FACE_FAILS = 3;
 const MAX_PASSWORD_FAILS = 5;
 const LOCK_SECONDS = 60;
-const METHOD_KEY = "intervo.signinMethod"; // localStorage: email → "password" | "face"
-const PASSWORD_KEY = "intervo.passwordGuard"; // localStorage: email → { fails, lockedUntil }
-const FACE_KEY = "intervo.faceFails"; // sessionStorage: email → failed face attempts
+const PASSWORD_KEY = "intervo.passwordGuard"; // localStorage: email → { fails }
 
-function readMap(storage, key) {
+function readMap(key) {
   try {
-    return JSON.parse(window[storage].getItem(key)) || {};
+    return JSON.parse(window.localStorage.getItem(key)) || {};
   } catch {
     return {};
   }
 }
 
-function writeEntry(storage, key, email, value) {
+function writeEntry(key, email, value) {
   try {
-    const map = readMap(storage, key);
+    const map = readMap(key);
     if (value == null) delete map[email];
     else map[email] = value;
-    window[storage].setItem(key, JSON.stringify(map));
+    window.localStorage.setItem(key, JSON.stringify(map));
   } catch {
     /* storage blocked — limits then only last for this page */
   }
 }
 
-/* ---------------- Sign in: email → one method (password or Face ID) ---------------- */
+/* ---------------- Sign in: step 1 password → step 2 face (both required) ---------------- */
 
 function SignIn({ role, setRole }) {
   const { login, notify } = useStore();
-  const [account, setAccount] = useState(null); // { email, faceEnabled } once step 1 passes
+  const [stage, setStage] = useState("password"); // "password" | "face"
+  const [faceEnrolled, setFaceEnrolled] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [method, setMethod] = useState("password");
   const [show, setShow] = useState(false);
   const [remember, setRemember] = useState(true);
   const [error, setError] = useState("");
   const [noAccount, setNoAccount] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [faceFails, setFaceFails] = useState(0);
   const [lockedUntil, setLockedUntil] = useState(0);
   const [now, setNow] = useState(Date.now);
 
   const locked = lockedUntil > now;
-  const faceLocked = faceFails >= MAX_FACE_FAILS;
-  const faceAvailable = !!account?.faceEnabled && !faceLocked;
+  const addr = email.trim().toLowerCase();
 
   // Countdown while sign-in is blocked.
   useEffect(() => {
@@ -108,147 +103,93 @@ function SignIn({ role, setRole }) {
   }
 
   function lockFor(seconds) {
-    const until = Date.now() + seconds * 1000;
-    writeEntry("localStorage", PASSWORD_KEY, account.email, { fails: 0, lockedUntil: until });
-    setLockedUntil(until);
+    setLockedUntil(Date.now() + seconds * 1000);
     setNow(Date.now());
     showError("");
   }
 
-  async function findAccount(e) {
+  /* Step 1: role + email + password. Success only opens the face step. */
+  async function checkPassword(e) {
     e.preventDefault();
+    if (locked) return;
     showError("");
-    const addr = email.trim().toLowerCase();
     if (!EMAIL_RE.test(addr)) return showError("Enter a valid email address.");
+    if (!password) return showError("Enter your password.");
     setLoading(true);
     try {
-      const { faceEnabled } = await api.lookupAccount({ email: addr, role });
-      const fails = readMap("sessionStorage", FACE_KEY)[addr] || 0;
-      const last = readMap("localStorage", METHOD_KEY)[addr];
-      setAccount({ email: addr, faceEnabled });
-      setFaceFails(fails);
-      setLockedUntil(readMap("localStorage", PASSWORD_KEY)[addr]?.lockedUntil || 0);
-      setNow(Date.now());
-      setMethod(last === "face" && faceEnabled && fails < MAX_FACE_FAILS ? "face" : "password");
+      const res = await api.startLogin({ email: addr, role, password });
+      writeEntry(PASSWORD_KEY, addr, null);
+      setFaceEnrolled(res.faceEnrolled);
+      setStage("face");
     } catch (err) {
-      showError(err.message, err.status === 404);
+      if (err.status === 429) return lockFor(err.retryAfter || LOCK_SECONDS);
+      if (err.status !== 401) return showError(err.message, err.status === 404);
+      const fails = (readMap(PASSWORD_KEY)[addr]?.fails || 0) + 1;
+      writeEntry(PASSWORD_KEY, addr, { fails });
+      const left = MAX_PASSWORD_FAILS - fails;
+      showError(left > 0
+        ? `Incorrect password. ${left} ${left === 1 ? "attempt" : "attempts"} left before sign-in is paused for ${LOCK_SECONDS} seconds.`
+        : "Incorrect password.");
     } finally {
       setLoading(false);
     }
   }
 
-  function finish(user, via) {
-    writeEntry("localStorage", METHOD_KEY, account.email, via);
-    writeEntry("localStorage", PASSWORD_KEY, account.email, null);
-    writeEntry("sessionStorage", FACE_KEY, account.email, null);
+  function finish(user) {
     login(user.id, remember);
     notify(`Welcome back, ${firstName(user.name)}`);
   }
 
-  async function signInWithPassword(e) {
-    e.preventDefault();
-    if (locked) return;
-    if (!password) return showError("Enter your password.");
-    showError("");
-    setLoading(true);
+  /* The face step failed in a way that needs the password again (timed out, spent or blocked). */
+  function backToPassword(err) {
+    setStage("password");
+    setPassword("");
+    if (err.status === 429) lockFor(err.retryAfter || LOCK_SECONDS * 5);
+    else showError(err.message);
+  }
+
+  async function enrolAndFinish({ template }) {
     try {
-      finish(await api.login({ email: account.email, role, password, remember }), "password");
+      finish(await api.completeFace({ template, remember }));
     } catch (err) {
-      setLoading(false);
-      if (err.status === 429) return lockFor(err.retryAfter || LOCK_SECONDS);
-      if (err.status !== 401) return showError(err.message);
-      const fails = (readMap("localStorage", PASSWORD_KEY)[account.email]?.fails || 0) + 1;
-      if (fails >= MAX_PASSWORD_FAILS) return lockFor(LOCK_SECONDS);
-      writeEntry("localStorage", PASSWORD_KEY, account.email, { fails, lockedUntil: 0 });
-      const left = MAX_PASSWORD_FAILS - fails;
-      showError(`Incorrect password. ${left} ${left === 1 ? "attempt" : "attempts"} left before sign-in is paused for ${LOCK_SECONDS} seconds.`);
+      if (api.needsPassword(err)) backToPassword(err);
+      else notify(err.message, "bad");
     }
   }
 
-  function onFaceFail(err) {
-    if (err.status === 429) return lockFor(err.retryAfter || LOCK_SECONDS);
-    const fails = faceFails + 1;
-    writeEntry("sessionStorage", FACE_KEY, account.email, fails);
-    setFaceFails(fails);
-    if (fails >= MAX_FACE_FAILS) setMethod("password");
-  }
-
-  /* ---- Step 2: choose a method ---- */
-  if (account) {
-    const secondsLeft = Math.ceil((lockedUntil - now) / 1000);
+  /* ---- Step 2: face verification (or enrolment when the account has no face yet) ---- */
+  if (stage === "face") {
     return (
       <>
-        <button className="btn btn--text auth__back" onClick={() => { setAccount(null); showError(""); }}><Icon name="arrowLeft" size={15} /> Back</button>
-        <p className="kicker">Step 2 of 2 · Sign in</p>
-        <h1>Welcome back</h1>
+        <button className="btn btn--text auth__back" onClick={() => { setStage("password"); setPassword(""); showError(""); }}><Icon name="arrowLeft" size={15} /> Back</button>
+        <p className="kicker">Step 2 of 2 · Face verification</p>
+        <h1>{faceEnrolled ? "Verify your face" : "Set up face verification"}</h1>
         <p className="auth__lead">
-          Signing in to the {ROLE_COPY[role].label.toLowerCase()} account <b>{account.email}</b>. Use your password or Face ID — either one is enough.
+          {faceEnrolled
+            ? <>Password accepted for <b>{addr}</b>. Look at the camera and blink to finish signing in.</>
+            : <>Password accepted for <b>{addr}</b>. This account has no face yet. Face verification is required to protect your account, so set it up now.</>}
         </p>
-
-        <div className="role-tabs role-tabs--two" role="tablist" aria-label="Sign-in method">
-          <button role="tab" aria-selected={method === "password"} className={method === "password" ? "is-active" : ""} onClick={() => { setMethod("password"); showError(""); }}>
-            <Icon name="lock" size={16} /> Password
-          </button>
-          <button role="tab" aria-selected={method === "face"} className={method === "face" ? "is-active" : ""} disabled={!faceAvailable} onClick={() => { setMethod("face"); showError(""); }}>
-            <Icon name="scan" size={16} /> Face ID
-          </button>
-        </div>
-
-        {!account.faceEnabled && (
-          <p className="auth__hint"><Icon name="info" size={14} /> Face ID isn't set up for this account. You can add it later in Profile & Privacy.</p>
-        )}
-        {account.faceEnabled && faceLocked && (
-          <p className="auth__hint"><Icon name="lock" size={14} /> Face ID is locked after {MAX_FACE_FAILS} failed attempts. Sign in with your password.</p>
-        )}
-
-        {locked ? (
-          <p className="form__error" role="alert"><Icon name="lock" size={15} /> Too many failed attempts. Sign-in is paused — try again in {secondsLeft}s.</p>
-        ) : method === "face" ? (
+        {faceEnrolled ? (
           <FaceCapture
             mode="verify"
-            verify={(faceTemplate) => api.login({ email: account.email, role, faceTemplate, remember })}
-            onComplete={(user) => finish(user, "face")}
-            onFail={onFaceFail}
-            onFallback={() => setMethod("password")}
-            fallbackLabel={`Use password instead${faceFails ? ` · ${MAX_FACE_FAILS - faceFails} Face ID ${MAX_FACE_FAILS - faceFails === 1 ? "attempt" : "attempts"} left` : ""}`}
+            verify={(template) => api.completeFace({ template, remember })}
+            onComplete={finish}
+            onFail={(err) => { if (api.needsPassword(err)) backToPassword(err); }}
           />
         ) : (
-          <form className="form" onSubmit={signInWithPassword} noValidate>
-            <div className="field">
-              <div className="field__row">
-                <label htmlFor="password">Password</label>
-                <button type="button" className="link" onClick={() => showError("Password reset emails are sent by the backend — not available in the prototype.")}>Forgot password?</button>
-              </div>
-              <div className="input">
-                <Icon name="lock" size={17} />
-                <input id="password" type={show ? "text" : "password"} autoComplete="current-password" placeholder="Your password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} />
-                <button type="button" className="input__action" onClick={() => setShow((v) => !v)} aria-label={show ? "Hide password" : "Show password"}>
-                  <Icon name={show ? "eyeOff" : "eye"} size={17} />
-                </button>
-              </div>
-            </div>
-            {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
-            <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading}>
-              {loading ? <span className="spinner" /> : <>Sign in <Icon name="arrowRight" size={16} /></>}
-            </button>
-          </form>
+          <FaceCapture mode="enroll" onComplete={enrolAndFinish} />
         )}
-
-        <label className="check auth__remember">
-          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
-          <span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>
-          Keep me signed in on this device
-        </label>
       </>
     );
   }
 
-  /* ---- Step 1: role + email ---- */
+  /* ---- Step 1: role + email + password ---- */
+  const secondsLeft = Math.ceil((lockedUntil - now) / 1000);
   return (
     <>
-      <p className="kicker">Step 1 of 2 · Account</p>
+      <p className="kicker">Step 1 of 2 · Password</p>
       <h1>Welcome back</h1>
-      <p className="auth__lead">Choose your role and enter your email. Next, sign in with your password or Face ID.</p>
+      <p className="auth__lead">Choose your role and enter your email and password. Next, verify your face.</p>
 
       <div className="role-tabs" role="tablist">
         {Object.entries(ROLE_COPY).map(([key, r]) => (
@@ -258,7 +199,7 @@ function SignIn({ role, setRole }) {
         ))}
       </div>
 
-      <form className="form" onSubmit={findAccount} noValidate>
+      <form className="form" onSubmit={checkPassword} noValidate>
         <div className="field">
           <label htmlFor="email">Email</label>
           <div className="input">
@@ -266,15 +207,34 @@ function SignIn({ role, setRole }) {
             <input id="email" type="email" autoComplete="email" placeholder={role === "employer" ? "hr@company.com" : "you@uog.edu.pk"} value={email} onChange={(e) => setEmail(e.target.value)} />
           </div>
         </div>
-        {error && (
+        <div className="field">
+          <div className="field__row">
+            <label htmlFor="password">Password</label>
+            <button type="button" className="link" onClick={() => showError("Password reset emails are sent by the backend — not available in the prototype.")}>Forgot password?</button>
+          </div>
+          <div className="input">
+            <Icon name="lock" size={17} />
+            <input id="password" type={show ? "text" : "password"} autoComplete="current-password" placeholder="Your password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <button type="button" className="input__action" onClick={() => setShow((v) => !v)} aria-label={show ? "Hide password" : "Show password"}>
+              <Icon name={show ? "eyeOff" : "eye"} size={17} />
+            </button>
+          </div>
+        </div>
+        {locked && <p className="form__error" role="alert"><Icon name="lock" size={15} /> Too many failed attempts. Sign-in is paused — try again in {secondsLeft >= 90 ? `${Math.ceil(secondsLeft / 60)} min` : `${secondsLeft}s`}.</p>}
+        {error && !locked && (
           <p className="form__error" role="alert">
             <Icon name="alert" size={15} /> {error}
             {noAccount && role !== "admin" && <> <button type="button" className="link" onClick={() => navigate("/signup")}>Create an account</button></>}
           </p>
         )}
-        <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading}>
-          {loading ? <span className="spinner" /> : <>Continue <Icon name="arrowRight" size={16} /></>}
+        <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading || locked}>
+          {loading ? <span className="spinner" /> : <>Continue to face verification <Icon name="arrowRight" size={16} /></>}
         </button>
+        <label className="check auth__remember">
+          <input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />
+          <span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>
+          Keep me signed in on this device
+        </label>
       </form>
 
       {role !== "admin" ? (
@@ -296,18 +256,21 @@ function SignIn({ role, setRole }) {
   );
 }
 
-/* ---------------- Sign up: role → details → Face ID (optional) ---------------- */
+/* ---------------- Sign up: role → details → face (required, no skip) ---------------- */
 
 function SignUp({ role, setRole }) {
   const { db, login, notify } = useStore();
   const [step, setStep] = useState(1);
   const [form, setForm] = useState({ name: "", email: "", company: "", password: "", confirm: "", terms: false, dataConsent: false });
   const [error, setError] = useState("");
+  const [faceError, setFaceError] = useState("");
   const [show, setShow] = useState(false);
+  const [loading, setLoading] = useState(false);
   const strength = passwordStrength(form.password);
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value }));
 
-  function validateDetails(e) {
+  /* Validates the details, then creates the account (without a face). The face step must follow. */
+  async function createAccount(e) {
     e.preventDefault();
     const email = form.email.trim().toLowerCase();
     if (form.name.trim().length < 3) return setError("Enter your full name.");
@@ -320,24 +283,37 @@ function SignUp({ role, setRole }) {
     if (!form.terms) return setError("Please accept the terms to continue.");
     if (role === "candidate" && !form.dataConsent) return setError("Consent is needed to process your CV and interview answers.");
     setError("");
-    setStep(3);
-  }
-
-  async function createAccount(face) {
+    setLoading(true);
     try {
-      const created = await api.signup({ role, name: form.name, email: form.email, company: form.company, password: form.password, dataConsent: form.dataConsent, face });
-      login(created.id, true);
-      notify(face ? "Account created with Face ID — welcome to Intervo" : "Account created — welcome to Intervo");
+      await api.startSignup({ role, name: form.name, email, company: form.company, password: form.password, dataConsent: form.dataConsent });
+      setStep(3);
     } catch (err) {
       setError(err.message);
-      setStep(2);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function enrolFace({ template }) {
+    setFaceError("");
+    try {
+      const user = await api.completeFace({ template, remember: true });
+      login(user.id, true);
+      notify("Account created with face verification — welcome to Intervo");
+    } catch (err) {
+      if (api.needsPassword(err)) {
+        notify("Your account was created. Sign in with your password to finish setting up your face.", "bad");
+        navigate("/login");
+      } else {
+        setFaceError(err.message);
+      }
     }
   }
 
   return (
     <>
       <div className="stepper" aria-label="Sign-up progress">
-        {["Role", "Details", "Face ID"].map((s, i) => (
+        {["Role", "Details", "Face"].map((s, i) => (
           <div key={s} className={`stepper__item ${step === i + 1 ? "is-current" : ""} ${step > i + 1 ? "is-done" : ""}`}>
             <span>{step > i + 1 ? <Icon name="check" size={12} strokeWidth={2.8} /> : i + 1}</span> {s}
           </div>
@@ -366,8 +342,8 @@ function SignUp({ role, setRole }) {
         <>
           <button className="btn btn--text auth__back" onClick={() => setStep(1)}><Icon name="arrowLeft" size={15} /> Back</button>
           <h1>{role === "employer" ? "Employer details" : "Your details"}</h1>
-          <p className="auth__lead">{role === "employer" ? "Tell us who you're hiring for." : "We'll use these to set up your candidate workspace."}</p>
-          <form className="form" onSubmit={validateDetails} noValidate>
+          <p className="auth__lead">{role === "employer" ? "Tell us who you're hiring for." : "We'll use these to set up your candidate workspace."} Next, you'll set up face verification.</p>
+          <form className="form" onSubmit={createAccount} noValidate>
             <div className={role === "employer" ? "form__grid" : "form"}>
               <div className="field">
                 <label htmlFor="su-name">Full name</label>
@@ -417,17 +393,19 @@ function SignUp({ role, setRole }) {
               </label>
             )}
             {error && <p className="form__error"><Icon name="alert" size={15} /> {error}</p>}
-            <button className="btn btn--primary btn--block btn--lg" type="submit">Continue <Icon name="arrowRight" size={16} /></button>
+            <button className="btn btn--primary btn--block btn--lg" type="submit" disabled={loading}>
+              {loading ? <span className="spinner" /> : <>Continue to face verification <Icon name="arrowRight" size={16} /></>}
+            </button>
           </form>
         </>
       )}
 
       {step === 3 && (
         <>
-          <button className="btn btn--text auth__back" onClick={() => setStep(2)}><Icon name="arrowLeft" size={15} /> Back</button>
-          <h1>Set up Face ID</h1>
-          <p className="auth__lead">Sign in with a glance and a blink instead of typing your password. We store landmark measurements, not your photo. You can also set this up later in Profile & Privacy.</p>
-          <FaceCapture mode="enroll" onComplete={createAccount} onFallback={() => createAccount(null)} fallbackLabel="Skip for now" />
+          <h1>Set up face verification</h1>
+          <p className="auth__lead">Face verification is required to protect your account. You'll verify your face with a blink every time you sign in. We store landmark measurements, not your photo.</p>
+          {faceError && <p className="form__error" role="alert"><Icon name="alert" size={15} /> {faceError}</p>}
+          <FaceCapture mode="enroll" onComplete={enrolFace} />
         </>
       )}
 
@@ -554,7 +532,7 @@ function Showcase({ role }) {
         </ul>
       </div>
       <p className="showcase__foot">
-        <Icon name="shield" size={14} /> Password or Face ID sign-in <i /> Consent-first data sharing
+        <Icon name="shield" size={14} /> Password + Face verification <i /> Consent-first data sharing
       </p>
     </aside>
   );

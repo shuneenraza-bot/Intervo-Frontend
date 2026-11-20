@@ -41,7 +41,7 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /* ---------- Face engine: MediaPipe Face Landmarker, shared by every FaceCapture ---------- */
 
-const ENGINE_TIMEOUT = 15000; // past this, Face ID reports the model as unavailable
+const ENGINE_TIMEOUT = 15000; // past this, face verification reports the model as unavailable
 let faceEnginePromise = null;
 function loadFaceEngine() {
   if (!faceEnginePromise) {
@@ -105,7 +105,7 @@ async function landmarkEnroll(engine, video, report) {
 }
 
 /* Blink liveness, then the live geometry. A printed photo can't blink, so it fails here.
- * Matching against the enrolled template is done by the caller (api.login — on the server in backend mode). */
+ * Matching against the enrolled template is done by the caller (api.completeFace — on the server in backend mode). */
 async function landmarkLiveness({ cues, landmarker }, video, report) {
   report("Look at the camera and blink…");
   const start = performance.now();
@@ -135,10 +135,11 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
   return { ok: true, template: { v: cues.FACE_TEMPLATE_VERSION, method: "landmarks", features: cues.averageGeometry(frames) } };
 }
 
-const MSG_NO_MODEL = "The face model couldn't load, so Face ID isn't available right now. Check your connection and try again.";
+const MSG_NO_CAMERA = "A camera is required to sign in. Allow camera access, or ask an admin to reset your face.";
+const MSG_NO_MODEL = "The face model couldn't load, so face verification isn't available right now. Check your connection and try again.";
 
 /**
- * Face ID enrolment / verification step.
+ * Face enrolment / verification step (required to sign in, no skip).
  *  mode="enroll": requires exactly one face, captures 3 samples and returns an
  *                 averaged landmark-geometry template via onComplete({ template, quality }).
  *  mode="verify": blink liveness within 4s, then passes the live template to the async
@@ -146,7 +147,7 @@ const MSG_NO_MODEL = "The face model couldn't load, so Face ID isn't available r
  *                 the error message is shown.
  * Every failed attempt calls onFail(error) — sign-in uses it to count attempts.
  */
-export function FaceCapture({ mode = "enroll", verify, onComplete, onFail, onFallback, fallbackLabel }) {
+export function FaceCapture({ mode = "enroll", verify, onComplete, onFail }) {
   const { videoRef, status } = useCamera(true);
   const [phase, setPhase] = useState("idle"); // idle | capturing | success | fail
   const [progress, setProgress] = useState(0);
@@ -213,7 +214,7 @@ export function FaceCapture({ mode = "enroll", verify, onComplete, onFail, onFal
               {status === "unavailable" && "No camera available"}
               {status === "idle" && "Camera off"}
             </strong>
-            {(status === "denied" || status === "unavailable") && <span>Allow camera access in your browser{onFallback ? ", or use the option below." : "."}</span>}
+            {(status === "denied" || status === "unavailable") && <span>{MSG_NO_CAMERA}</span>}
           </div>
         )}
         {camOk && <div className="facecap__oval" aria-hidden="true" />}
@@ -229,13 +230,8 @@ export function FaceCapture({ mode = "enroll", verify, onComplete, onFail, onFal
       <div className="facecap__actions">
         <button type="button" className="btn btn--primary btn--block" disabled={!camOk || phase === "capturing" || phase === "success"} onClick={() => { setProgress(0); capture(); }}>
           <Icon name="scan" size={16} />
-          {phase === "fail" ? "Try again" : mode === "enroll" ? "Set up Face ID" : "Sign in with Face ID"}
+          {phase === "fail" ? "Try again" : mode === "enroll" ? "Set up face verification" : "Verify my face"}
         </button>
-        {onFallback && (
-          <button type="button" className="btn btn--text facecap__fallback" onClick={onFallback}>
-            {fallbackLabel}
-          </button>
-        )}
       </div>
     </div>
   );

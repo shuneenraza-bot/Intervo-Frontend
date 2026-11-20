@@ -61,8 +61,8 @@ const FEATURES = [
   },
   {
     icon: "scan",
-    title: "Face-verified secure sign-in",
-    text: "Sign in with your password or Face ID. Repeated failed attempts pause sign-in automatically.",
+    title: "Two-factor sign-in",
+    text: "Password + Face verification, every time. Repeated failed attempts pause sign-in automatically.",
   },
 ];
 
@@ -82,7 +82,7 @@ const EMPLOYER_POINTS = [
 
 const PRIVACY = [
   { icon: "shield", title: "Consent-first sharing", text: "Nothing reaches an employer unless you turn sharing on, and you can turn it off again at any time." },
-  { icon: "scan", title: "Face templates, not photos", text: "Face ID keeps a numeric template of your face for matching, not the images from your camera." },
+  { icon: "scan", title: "Face templates, not photos", text: "Face verification keeps a numeric template of your face for matching, not the images from your camera." },
   { icon: "trash", title: "Delete your data anytime", text: "Remove your CV, interview sessions and face template from Profile & Privacy whenever you want." },
 ];
 

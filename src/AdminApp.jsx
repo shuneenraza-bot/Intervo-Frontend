@@ -39,7 +39,7 @@ function AdminOverview({ go }) {
     { page: "domains", icon: "layers", label: "Domains & roles", value: `${c.domains.length} / ${c.roles.length}`, text: "Group roles by domain and set required skills with weights." },
     { page: "skills", icon: "tag", label: "Skills", value: c.skills.length, text: "Aliases for CV extraction, related skills for partial matches, coaching tips." },
     { page: "questions", icon: "book", label: "Question templates", value: c.questions.length, text: "Per-skill questions with expected key points and follow-ups." },
-    { page: "criteria", icon: "sliders", label: "Criteria & rules", value: c.criteria.filter((x) => x.enabled).length, text: "Rubric weights, weakness threshold, follow-ups and Face ID rules." },
+    { page: "criteria", icon: "sliders", label: "Criteria & rules", value: c.criteria.filter((x) => x.enabled).length, text: "Rubric weights, weakness threshold, follow-ups and face verification rules." },
   ];
   return (
     <>
@@ -347,7 +347,7 @@ function CriteriaRules() {
 
   return (
     <>
-      <PageHeader kicker="Configuration" title="Criteria & rules" subtitle="The rubric used to score every answer and the rules behind weakness detection, follow-ups and Face ID." />
+      <PageHeader kicker="Configuration" title="Criteria & rules" subtitle="The rubric used to score every answer and the rules behind weakness detection, follow-ups and face verification." />
       <div className="grid grid--split">
         <Card title="Evaluation criteria" subtitle="Weights in the answer score">
           <div className="crit-list">
@@ -397,8 +397,24 @@ function NumberRule({ label, hint, value, suffix = "", min, max, step, onChange 
 /* ---------------- Users ---------------- */
 
 function Users() {
-  const { db } = useStore();
+  const { db, notify } = useStore();
   const [role, setRole] = useState("all");
+  const [resetting, setResetting] = useState(null); // the user whose face is about to be reset
+  const [busy, setBusy] = useState(false);
+
+  async function resetFace() {
+    setBusy(true);
+    try {
+      await api.resetFace(resetting.id);
+      notify(`${resetting.name} will enrol a new face at their next sign-in`);
+      setResetting(null);
+    } catch (e) {
+      notify(e.message, "bad");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const list = api.adminUsers(db).filter((u) => role === "all" || u.role === role);
   return (
     <>
@@ -409,7 +425,7 @@ function Users() {
       <Card>
         {list.length ? (
           <div className="table table--users" role="table">
-            <div className="table__row table__row--head" role="row"><span>User</span><span>Role</span><span>Face login</span><span>Activity</span><span>Joined</span></div>
+            <div className="table__row table__row--head" role="row"><span>User</span><span>Role</span><span>Face</span><span>Activity</span><span>Joined</span><span>Actions</span></div>
             {list.map((u) => (
               <div className="table__row" role="row" key={u.id}>
                 <span className="user-cell"><span className="avatar avatar--sm">{initials(u.name)}</span><span><strong>{u.name}</strong><small>{u.email}</small></span></span>
@@ -419,11 +435,26 @@ function Users() {
                   {u.role === "candidate" ? plural(u.sessions, "session") : u.role === "employer" ? plural(u.jobs, "job") : "—"}
                 </span>
                 <span className="table__muted">{formatDate(u.createdAt)}</span>
+                <span>
+                  <button className="btn btn--ghost btn--sm" disabled={!u.faceEnrolled} onClick={() => setResetting(u)} title={u.faceEnrolled ? "Clear this user's face so they enrol again at next sign-in" : "No face enrolled"}>
+                    Reset face
+                  </button>
+                </span>
               </div>
             ))}
           </div>
         ) : <Empty icon="users" title="No users" text="Nobody in this group yet." />}
       </Card>
+      <Modal
+        open={!!resetting}
+        onClose={() => setResetting(null)}
+        title="Reset face?"
+        footer={<><button className="btn btn--ghost" onClick={() => setResetting(null)}>Cancel</button><button className="btn btn--danger-solid" onClick={resetFace} disabled={busy}>Reset face</button></>}
+      >
+        <p className="muted">
+          {resetting?.name}'s face template will be cleared and their open sessions will end. They sign in with their password and enrol a new face. Use this when their camera or appearance means the old face no longer matches.
+        </p>
+      </Modal>
     </>
   );
 }

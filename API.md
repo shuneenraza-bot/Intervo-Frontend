@@ -40,47 +40,57 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 
 ---
 
-### POST `/auth/lookup`
-Sign-in step 1. Checks that an account exists for this email **and** role tab, and tells the UI whether to offer Face ID.
+### Sign in and sign up are two-factor: password, then face
 
-Request: `{ "email": "ayesha@intervo.demo", "role": "candidate" }`
+Every role, at sign-up and at sign-in, needs **both** steps. A password alone never gives access.
 
-Response `200`: `{ "faceEnabled": true }`. `true` only when `face.template` is a current landmark template (`v: 2`). Older pixel templates count as `false`, so those users re-enrol in Profile & Privacy.
+1. `POST /auth/login` (or `POST /auth/signup`) returns a **face-pending token**: a JWT with `scope: "face_pending"` that lives 5 minutes.
+2. `POST /auth/face/verify` (face already enrolled) or `POST /auth/face/enroll` (not enrolled) takes that token and returns the **full token**.
 
-Errors (`404`):
-- Email not registered: `"No account found with this email."`
-- Email registered under a different role: `"No candidate account found with this email."` (use the requested role). **Never reveal the account's real role.**
+Only full tokens open any other endpoint. A face-pending token gets `401` everywhere except the two face endpoints, and a full token gets `401` on those two. An account with no face enrolled gets `401` on every endpoint except the face step. There is no face-only login, no "password or face" choice, no skip, and no delete.
 
 ### POST `/auth/login`
-Sign-in step 2. The user signs in with **one** method. Password and Face ID are alternatives, and either one is enough. The body holds either `password` or `faceTemplate`, never both.
+Step 1. Checks the account (email **and** role tab) and the password.
 
-Password:
-```json
-{ "email": "ayesha@intervo.demo", "role": "candidate", "password": "Demo@1234" }
-```
-Face ID:
-```json
-{ "email": "ayesha@intervo.demo", "role": "candidate", "faceTemplate": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] } }
-```
-`faceTemplate` is the live landmark geometry from the browser. It is captured only after the blink liveness check passes. Compare it with the stored `face.template.features` the way `compareGeometry` in `src/faceCues.js` does: `similarity = max(0, 1 − mean(|a − b|) / 0.12)`. Accept the template when `similarity ≥ config.rules.faceThreshold`. Reference implementation: `login` in `src/api.js`.
+Request: `{ "email": "ayesha@intervo.demo", "role": "candidate", "password": "Demo@1234" }`
 
-On success, set `user.lastLogin = { at: now, method: "password" | "face" }`.
-
-Response `200`: `{ "token": "<jwt>", "user": User }`
+Response `200`: `{ "pendingToken": "<jwt, scope face_pending>", "faceEnrolled": true, "expiresIn": 300 }`. `faceEnrolled` is `true` only for a current landmark template (`v: 2`). Older pixel templates count as `false`, so those users enrol again. The response never holds a full `token` or a `user`.
 
 Errors:
-- `404`: same messages as `/auth/lookup`.
-- `401`: `"Incorrect password."` or `"Face didn't match this account."`
-- `400`: `"Face ID isn't set up for this account."` (a `faceTemplate` was sent but the account has no landmark template).
-- `429`: too many attempts. Send a `Retry-After` header in seconds. The UI shows a countdown.
+- `404`: `"No account found with this email."`, or for a different role tab `"No candidate account found with this email."` (use the requested role). **Never reveal the account's real role.**
+- `401`: `"Incorrect password."`
+- `429`: blocked. A `Retry-After` header gives the seconds; the UI shows a countdown.
 
-**Attempt limits.** The frontend applies these too, but the server must enforce them:
-- 5 wrong passwords for an email → block **all** sign-in for that email for 60 seconds (`429`, `Retry-After: 60`).
-- 3 failed Face ID attempts → reject `faceTemplate` logins for that email until a successful password sign-in (`429` or `401`). The frontend locks Face ID for the browser session and switches to the password tab.
-- A successful sign-in resets both counters.
+### POST `/auth/face/verify`
+Step 2 for an enrolled account. Header: `Authorization: Bearer <pendingToken>`.
+
+```json
+{
+  "template": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] },
+  "liveness": { "blink": true }
+}
+```
+`template` is the live landmark geometry from the browser. It is captured only after the blink liveness check passes, and `liveness.blink` must be `true`. Compare it with the stored `face.template.features` the way `compareGeometry` in `src/faceCues.js` does: `similarity = max(0, 1 − mean(|a − b|) / 0.12)`. Accept it when `similarity ≥ config.rules.faceThreshold`. Reference implementation: `completeFace` in `src/api.js`. The blink is detected in the browser; a server can't re-check a blink from a template.
+
+Response `200`: `{ "token": "<full jwt>", "user": User }`, and `user.lastLogin = { at, method: "face" }` (this means password + face).
+
+Errors:
+- `401`: `"Face didn't match this account. 2 attempts left."`; or the pending token is missing, expired or already spent (`"Too many failed face attempts. Enter your password again to continue."`). The frontend sends the user back to the password step.
+- `400`: no face enrolled, or `liveness.blink` is `false`.
+- `429`: blocked (see below).
+
+### POST `/auth/face/enroll`
+Step 2 for an account with no face yet (every new sign-up, and any user an admin reset). Header: `Authorization: Bearer <pendingToken>`.
+
+Request: `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }`. Response `200`: `{ "token": "<full jwt>", "user": User }`. `409` if a face is already enrolled (verify it instead).
+
+**Attempt limits.** The frontend mirrors these, but the server enforces them:
+- 5 wrong passwords for an email → block sign-in for that email for 60 seconds (`429`, `Retry-After: 60`).
+- 3 failed face attempts → block that login for 5 minutes (`429`, `Retry-After: 300`). The pending token is spent, so the user needs a new password step after the block.
+- A successful password step resets both counters.
 
 ### POST `/auth/signup`
-Creates a candidate or employer account. Admin accounts can't sign up. For a candidate, also create an empty profile (`skills: []`, `shareWithEmployers: false`, `consentAt: now`).
+Creates a candidate or employer account. Admin accounts can't sign up. For a candidate, also create an empty profile (`skills: []`, `shareWithEmployers: false`, `consentAt: now`). The account has **no face**: it must enrol one through `/auth/face/enroll` before there is a full token.
 
 Request:
 ```json
@@ -90,16 +100,15 @@ Request:
   "email": "ayesha@intervo.demo",
   "company": "Northstar Digital", // employers only
   "password": "Demo@1234",
-  "dataConsent": true,            // candidates must consent
-  "face": { "template": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] } }  // 276 landmark ratios, or null if skipped; older accounts may hold a 576-number array (pixel fallback)
+  "dataConsent": true             // candidates must consent
 }
 ```
-Response `201`: `{ "token": "<jwt>", "user": User }`
+Response `201`: `{ "pendingToken": "<jwt>", "faceEnrolled": false, "expiresIn": 300 }`
 
 Errors: `409` email already registered · `422` invalid input.
 
-### GET `/auth/me` · PUT `/auth/face` · DELETE `/auth/face`
-All three return the signed-in `User`. `GET /auth/me` is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and enrols or replaces Face ID; `DELETE` removes it.
+### GET `/auth/me` · PUT `/auth/face`
+Full token only. `GET /auth/me` returns the signed-in `User` and is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and **re-enrols** (replaces) the face from Profile & Privacy. A face can't be deleted.
 
 ### GET `/config`
 The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates and the skill library; the candidate and interview code read the rules.
@@ -251,6 +260,7 @@ Changes apply immediately: the interview engine, CV matching, evaluation and the
 | GET · PUT | `/admin/criteria` | `{ criteria: [{ key, weight 1-3, enabled }] }` | `404` unknown key; at least one must stay enabled |
 | GET · PUT | `/admin/rules` | any of `weakThreshold` 30-90, `weakMinSessions` 1-5, `followUpBelow` 30-80, `defaultQuestions` 3-6, `faceThreshold` 0.3-0.9 | omitted fields keep their value; returns all five |
 | GET | `/admin/users?role=` | | `{ id, name, email, role, company, faceEnrolled, createdAt, sessions, jobs }`; never a password hash or face template |
+| POST | `/admin/users/{id}/reset-face` | | Clears the user's face template and returns the same row with `faceEnrolled: false`. `404` unknown id. Their open sessions get `401` and they enrol a new face at the next sign-in |
 | GET | `/admin/stats` | | counts for the overview: `candidates, employers, admins, sessions, jobs, openJobs, applications, domains, roles, skills, questions, criteriaEnabled` |
 
 Responses use the shapes of `config` in `src/data.js` (a skill also carries its `id`). POST returns `201` with the stored item; DELETE returns `204`.
@@ -338,5 +348,5 @@ CVMatch {                           // the only per-candidate result employers g
 These still run only in the browser, whatever `VITE_BACKEND_MODULES` says. Add endpoints when the backend is ready for them (the `candidate` module covers CV, JD and interviews and the `admin` module the admin console on the backend; `/interview/evaluate` and `GET /sessions` above are only used in local mode):
 
 - Profile edits: name, per-application consent, saved jobs, account and data deletion (`ProfilePage.jsx`, `JobsPage.jsx`).
-- Recording `lastLogin` after face verification (`Auth.jsx`).
+- Recording `lastLogin` after face verification (`completeFace` in `api.js`).
 - Fetching a user's profile from the server. The candidate's own profile currently comes from the local cache, filled by `analyzeCV`.

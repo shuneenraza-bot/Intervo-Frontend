@@ -62,7 +62,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
 
   return (
     <>
-      <PageHeader kicker="Account" title="Profile & privacy" subtitle="Control your face login, what employers can see, and the data Intervo keeps about you." />
+      <PageHeader kicker="Account" title="Profile & privacy" subtitle="Manage your face verification, what employers can see, and the data Intervo keeps about you." />
 
       <div className="grid grid--split">
         <div className="stack">
@@ -95,25 +95,20 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
         </div>
 
         <div className="stack">
-          <Card title="Face ID" subtitle="Sign in with your face instead of your password">
+          <Card title="Face verification" subtitle="Required with your password every time you sign in">
             <div className={`face-status ${user.face?.template ? "is-on" : ""}`}>
               <span className="face-status__icon"><Icon name={user.face?.template ? "shield" : "scan"} size={22} /></span>
               <div>
-                <strong>{user.face?.template ? "Enabled" : "Not set up"}</strong>
-                <span>{user.face?.template ? `Template enrolled ${formatDate(user.face.enrolledAt)}` : "You sign in with your password. Set up Face ID to sign in with a glance."}</span>
-                {isLegacyTemplate(user.face?.template) && <span>Face ID was upgraded — re-enrol once to keep using it.</span>}
-                {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method === "face" ? "Face ID" : user.lastLogin.method.replace(/\+/g, " + ")}</span>}
+                <strong>{user.face?.template ? "Enrolled" : "Not set up"}</strong>
+                <span>{user.face?.template ? `Face enrolled ${formatDate(user.face.enrolledAt)}` : "Your face is enrolled at your next sign-in."}</span>
+                {isLegacyTemplate(user.face?.template) && <span>Face verification was upgraded — re-enrol your face once.</span>}
+                {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method === "face" ? "password + face verification" : user.lastLogin.method.replace(/\+/g, " + ")}</span>}
               </div>
             </div>
             <div className="btn-row">
-              <button className="btn btn--primary btn--sm" onClick={() => setEnrolOpen(true)}><Icon name="scan" size={15} /> {user.face?.template ? "Re-enrol face" : "Set up Face ID"}</button>
-              {user.face?.template && (
-                <button className="btn btn--ghost btn--sm" onClick={() => api.deleteFace(user.id).then(() => notify("Face template deleted"), (e) => notify(e.message, "bad"))}>
-                  Delete template
-                </button>
-              )}
+              <button className="btn btn--primary btn--sm" onClick={() => setEnrolOpen(true)}><Icon name="scan" size={15} /> Re-enrol face</button>
             </div>
-            <p className="field__hint">Only face landmark measurements are stored — never your photo.</p>
+            <p className="field__hint">Only face landmark measurements are stored — never your photo. Face verification can't be turned off. If your camera stops working, ask an admin to reset your face.</p>
           </Card>
 
           <Card title="Your data" subtitle="Retention and deletion">
@@ -132,13 +127,13 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
         </div>
       </div>
 
-      <Modal open={enrolOpen} onClose={() => setEnrolOpen(false)} title="Set up Face ID" subtitle="Centre your face in the oval with even lighting">
+      <Modal open={enrolOpen} onClose={() => setEnrolOpen(false)} title="Re-enrol your face" subtitle="Centre your face in the oval with even lighting">
         {enrolOpen && (
           <FaceCapture
             mode="enroll"
             onComplete={({ template }) => {
               setEnrolOpen(false);
-              api.enrolFace(user.id, template).then(() => notify("Face ID enabled"), (e) => notify(e.message, "bad"));
+              api.enrolFace(user.id, template).then(() => notify("Face re-enrolled"), (e) => notify(e.message, "bad"));
             }}
           />
         )}

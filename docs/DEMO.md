@@ -36,16 +36,16 @@ npm run dev
 - [ ] Browser zoom at 110 to 125% so the back of the room can read it
 - [ ] Laptop on charger, notifications off
 
-**If something fails:** Face ID not matching → click **Use password instead** and say "the password is always available as the fallback". Microphone not transcribing → type the answer in the transcript box. Backend down → the app shows "Can't reach the server"; restart `uvicorn`.
+**If something fails:** Face not matching → try again in better light (three wrong faces block that login for five minutes); if it keeps failing, reset the face from the admin **Users** page and enrol again. Microphone not transcribing → type the answer in the transcript box. Backend down → the app shows "Can't reach the server"; restart `uvicorn`.
 
 ## The demo
 
 | # | Time | Step |
 |---|---|---|
 | 1 | 0:00 – 0:25 | Landing page |
-| 2 | 0:25 – 1:10 | Sign up with Face ID |
-| 3 | 1:10 – 1:35 | Face ID sign-in |
-| 4 | 1:35 – 1:55 | Password sign-in |
+| 2 | 0:25 – 1:10 | Sign up with face verification |
+| 3 | 1:10 – 1:35 | Two-factor sign-in |
+| 4 | 1:35 – 1:55 | Attempt limits and admin face reset |
 | 5 | 1:55 – 2:45 | CV upload and job description analysis |
 | 6 | 2:45 – 4:05 | Video mock interview with a follow-up |
 | 7 | 4:05 – 4:30 | Apply with consent |
@@ -60,33 +60,33 @@ npm run dev
 
 **Say:** "This is Intervo, our final year project. Fresh graduates often fail interviews because they don't know where they are weak. Intervo reads a candidate's CV, finds the skill gap for a target job, runs mock interviews and tracks weak skills over time. Employers get an explainable suitability score, but only for candidates who agree to share. There are three roles: candidate, employer and admin."
 
-### 2. Sign up with Face ID (0:25 – 1:10)
+### 2. Sign up with face verification (0:25 – 1:10)
 
 **Do:**
 1. Click **Get started**.
 2. Choose **Candidate**, click **Continue**.
-3. Enter a name, the new email and a password (twice), and tick the terms and consent boxes. Click **Continue**.
-4. On **Set up Face ID**, centre your face in the oval and wait for the capture to finish.
+3. Enter a name, the new email and a password (twice), and tick the terms and consent boxes. Click **Continue to face verification**.
+4. On **Set up face verification**, centre your face in the oval and wait for the capture to finish. There is no skip.
 5. You land on the candidate dashboard.
 
-**Say:** "Sign-up is a real request to our FastAPI backend. The password is hashed with argon2 before it is stored in PostgreSQL. Face ID is optional. We use Google's MediaPipe in the browser to find face landmarks, and we store only measurements between those landmarks, never a photo."
+**Say:** "Sign-up is a real request to our FastAPI backend. The password is hashed with argon2 before it is stored in PostgreSQL. Face verification is required: the account can't be used until a face is enrolled. We use Google's MediaPipe in the browser to find face landmarks, and we store only measurements between those landmarks, never a photo."
 
-### 3. Face ID sign-in (1:10 – 1:35)
+### 3. Two-factor sign-in: password, then face (1:10 – 1:35)
 
 **Do:**
 1. Click the **Sign out** icon (top right).
-2. Click **Sign in**. Enter the same email, keep the **Candidate** tab, click **Continue**.
-3. Choose the **Face ID** tab. Look at the camera and **blink** when asked.
+2. Click **Sign in**. Keep the **Candidate** tab, enter the same email and the password, click **Continue to face verification**.
+3. Look at the camera and **blink** when asked.
 
-**Say:** "Sign-in has two steps: first the account, then one method. For Face ID the user must blink within four seconds. That is a liveness check, so a printed photo fails. The live measurements go to the server, which compares them with the stored template and returns a JWT if they are similar enough."
+**Say:** "Sign-in has two required steps. The password alone only returns a five-minute face-pending token, which opens nothing but the face step. Then the user must blink within four seconds. That is a liveness check, so a printed photo fails. The live measurements go to the server, which compares them with the stored template and returns the full JWT if they are similar enough."
 
-### 4. Password sign-in (1:35 – 1:55)
+### 4. Limits and admin reset (1:35 – 1:55)
 
 **Do:**
-1. **Sign out**.
-2. **Sign in** → same email → **Continue** → **Password** tab → type the password → **Sign in**.
+1. **Sign out**, sign in again, and at the face step cover the camera or look away until it fails.
+2. Optional: sign in as the admin, open **Users** and click **Reset face** next to the account.
 
-**Say:** "Password and Face ID are alternatives, and either one is enough. The server also limits attempts: five wrong passwords pause sign-in for sixty seconds, and three failed face attempts lock Face ID until the password is used."
+**Say:** "The server limits attempts: five wrong passwords pause sign-in for sixty seconds, and three wrong faces block that login for five minutes. If someone's camera breaks or their face stops matching, an admin resets their face and they enrol a new one at the next sign-in."
 
 ### 5. CV upload and job description analysis (1:55 – 2:45)
 

@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { DB_VERSION, seedDB } from "./data";
 import { clearToken, connectStore, restoreSession } from "./api";
 import { navigate } from "./router";
+import { isLandmarkTemplate } from "./lib";
 
 /*
  * App-wide store backed by localStorage. It plays the role of the PostgreSQL
@@ -96,7 +97,9 @@ export function StoreProvider({ children }) {
     logout();
   }, [logout]);
 
-  const user = db.users.find((u) => u.id === authId) || null;
+  // A signed-in account must have a face enrolled: if it was reset, the session ends (the backend does the same with a 401).
+  const found = db.users.find((u) => u.id === authId) || null;
+  const user = found && isLandmarkTemplate(found.face?.template) ? found : null;
 
   // Give the API layer access to the store: local modules read/write it, backend modules cache into it.
   connectStore({ db, update, user, logout, notify });

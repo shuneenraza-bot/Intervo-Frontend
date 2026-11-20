@@ -1115,8 +1115,6 @@ textarea::placeholder { color: var(--placeholder); }
 .facecap__msg.is-bad { color: var(--low-ink); }
 .facecap__msg.is-good { color: var(--good-ink); font-weight: 600; }
 .facecap__actions { display: grid; gap: 10px; justify-items: center; }
-.facecap__fallback { margin: 0; font-size: 12.5px; color: var(--muted); }
-.facecap__fallback:hover { color: var(--brand); }
 
 /* Topbar pills */
 .role-pill { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: 99px; font-size: 11.5px; font-weight: 600; text-transform: capitalize; }
@@ -1348,7 +1346,7 @@ textarea::placeholder { color: var(--placeholder); }
 .role-table__main { display: grid; gap: 4px; justify-items: start; }
 .role-table__main strong { font-size: 13.5px; }
 .table--skills .table__row { grid-template-columns: 140px minmax(0, 1.4fr) minmax(0, 1fr) 80px 76px; }
-.table--users .table__row { grid-template-columns: minmax(200px, 1.6fr) 110px 110px 1fr 1fr; }
+.table--users .table__row { grid-template-columns: minmax(200px, 1.6fr) 100px 100px 1fr 1fr 110px; }
 .table__muted { color: var(--muted); font-size: 12.5px; }
 .user-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .user-cell strong, .user-cell small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1396,7 +1394,7 @@ textarea::placeholder { color: var(--placeholder); }
   .table--skills .table__row { grid-template-columns: 1fr auto; }
   .table--skills .table__row > :nth-child(2), .table--skills .table__row > :nth-child(3), .table--skills .table__row > :nth-child(4) { display: none; }
   .table--users .table__row { grid-template-columns: 1fr auto; }
-  .table--users .table__row > :nth-child(3), .table--users .table__row > :nth-child(4), .table--users .table__row > :nth-child(5) { display: none; }
+  .table--users .table__row > :nth-child(2), .table--users .table__row > :nth-child(3), .table--users .table__row > :nth-child(4), .table--users .table__row > :nth-child(5) { display: none; }
   .role-table__row { grid-template-columns: 1fr auto; }
   .role-table__row .chips { grid-column: 1 / -1; grid-row: 2; }
 }
