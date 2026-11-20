@@ -24,6 +24,7 @@
  */
 import { cvFit, evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, uid } from "./lib";
 import { educationLevel, extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
+import { readCVFile, removeCVFile, saveCVFile } from "./cvFiles";
 
 const MODULES = new Set(
   (import.meta.env.VITE_BACKEND_MODULES || "").split(",").map((m) => m.trim().toLowerCase()).filter(Boolean)
@@ -32,6 +33,9 @@ const MODULES = new Set(
 export const uses = (module) => MODULES.has(module);
 export const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:8000/api").replace(/\/+$/, "");
 
+if (uses("employer") && !uses("candidate")) {
+  console.warn("VITE_BACKEND_MODULES: with the employer module on, applying needs a CV stored on the server, so the candidate module should be on too.");
+}
 if ((uses("employer") || uses("candidate") || uses("admin")) && !uses("auth")) {
   console.warn("VITE_BACKEND_MODULES: the employer, candidate and admin modules need the auth module too (their requests need a JWT).");
 }
@@ -371,12 +375,24 @@ export async function analyzeCV({ file, text }, onStep = () => {}) {
   const source = file ? await extractText(file, onStep) : text;
   onStep("parse");
   const parsed = parseCV(source, getDb().config.skills);
-  return { ...parsed, ...meta, parsedAt: Date.now(), text: source.slice(0, 20000) };
+  // Local mode keeps the original file too (in IndexedDB); the previous one goes unless an application holds it.
+  const previous = getDb().profiles[store?.user?.id]?.cv?.cvFile?.id;
+  const cvFile = await saveCVFile(file || new Blob([text], { type: "text/plain" }), file?.name || "pasted-cv.txt");
+  if (previous && previous !== cvFile.id) await dropFileIfUnused(previous, getDb().applications, getDb().profiles, store?.user?.id);
+  return { ...parsed, ...meta, cvFile, parsedAt: Date.now(), text: source.slice(0, 20000) };
+}
+
+/** Deletes a local CV file when no application snapshot holds it and it isn't another user's current CV. */
+async function dropFileIfUnused(fileId, applications, profiles, replacingUserId = null) {
+  if (!fileId) return;
+  const held = applications.some((a) => a.cvSnapshot?.cvFile?.id === fileId);
+  const current = Object.entries(profiles).some(([userId, p]) => userId !== replacingUserId && p?.cv?.cvFile?.id === fileId);
+  if (!held && !current) await removeCVFile(fileId);
 }
 
 /** A backend CVResponse as the CV page's record. `provider` is "gemini" or "rules". */
 function serverCV(res, meta) {
-  return { ...res.cv, ...meta, provider: res.provider, parsedAt: Date.now(), text: (res.text || "").slice(0, 20000) };
+  return { ...res.cv, ...meta, cvFile: res.file || null, provider: res.provider, parsedAt: Date.now(), text: (res.text || "").slice(0, 20000) };
 }
 
 /**
@@ -719,10 +735,14 @@ export async function setJobStatus(job, status) {
 
 /** Applies the candidate to a job. `consent` shares their results with the employer. */
 export async function applyToJob({ jobId, candidateId, consent }) {
+  const profile = getDb().profiles[candidateId];
+  if (!profile?.cv) throw new ApiError("Upload your CV before applying", 400); // the server enforces it too
   await syncCandidateData(candidateId); // the employer's ranking reads the server copy
+  // The employer receives the CV as it is now. Local mode keeps that copy on the application, like the server does.
+  const cvSnapshot = JSON.parse(JSON.stringify({ cv: { ...profile.cv, text: undefined }, skills: profile.skills || profile.cv.skills || [], cvFile: profile.cv.cvFile || null }));
   const application = uses("employer")
     ? await request("POST", `/jobs/${encodeURIComponent(jobId)}/apply`, { consent })
-    : { id: uid("app"), jobId, candidateId, date: Date.now(), consent, status: "applied", history: [{ status: "applied", at: Date.now() }] };
+    : { id: uid("app"), jobId, candidateId, date: Date.now(), consent, status: "applied", history: [{ status: "applied", at: Date.now() }], cvSnapshot };
   write((d) => {
     upsert(d.applications, application);
     if (consent) d.profiles[candidateId] = { ...d.profiles[candidateId], shareWithEmployers: true };
@@ -732,8 +752,12 @@ export async function applyToJob({ jobId, candidateId, consent }) {
 
 /** Withdraws the candidate's application to a job. */
 export async function withdrawApplication({ jobId, candidateId }) {
-  if (uses("employer")) await request("DELETE", `/jobs/${encodeURIComponent(jobId)}/apply`);
+  if (uses("employer")) await request("DELETE", `/jobs/${encodeURIComponent(jobId)}/apply`); // the server deletes the stored file
+  const db = getDb();
+  const gone = db.applications.find((a) => a.jobId === jobId && a.candidateId === candidateId);
+  const rest = db.applications.filter((a) => a !== gone);
   write((d) => { d.applications = d.applications.filter((a) => !(a.jobId === jobId && a.candidateId === candidateId)); });
+  if (!uses("employer")) await dropFileIfUnused(gone?.cvSnapshot?.cvFile?.id, rest, db.profiles);
 }
 
 /* ---------- Shortlist flow ----------
@@ -933,15 +957,86 @@ export function getCandidatesSync(jobId, db = getDb()) {
     const profile = db.profiles[app.candidateId];
     if (!cand) return;
     if (!app.consent || profile?.shareWithEmployers === false) return hidden++;
-    const cv = profile?.cv;
+    // The CV this employer received when the candidate applied; later uploads and edits don't change it.
+    const snap = app.cvSnapshot;
+    const cv = snap ? snap.cv : profile?.cv;
+    const scored = snap ? { ...profile, cv: snap.cv, skills: snap.skills } : profile;
     const cvSummary = cv ? { topDegree: cv.education?.[0]?.degree || null, experienceYears: cv.experienceYears || 0, projectCount: cv.projects?.length || 0 } : null;
-    const match = cvFit({ job, profile, config: db.config, checks: requirementChecks(job, profile) });
+    const match = cvFit({ job, profile: scored, config: db.config, checks: requirementChecks(job, scored) });
     // Contact details only once the candidate has accepted the shortlist.
     const contact = appStatus(app) === "accepted" ? { name: cand.name, email: cand.email, phone: cv?.contact?.phone || null } : null;
     visible.push({ app: { ...app, status: appStatus(app) }, cand: { id: cand.id, name: cand.name }, cvSummary, match, contact });
   });
   visible.sort((a, b) => b.match.percentage - a.match.percentage); // stable: ties keep application order
   return { job, visible, hidden };
+}
+
+/* ---------- The CV an employer receives ----------
+ * Before the candidate accepts: the parsed CV without contact details. After: the original file
+ * and the contact card. Same rules in local mode, read from the application's snapshot. */
+
+/** Opens a PDF in a new tab, saves anything else, from a Blob. */
+function deliverFile(blob, name, contentType) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  if ((contentType || blob.type) === "application/pdf") a.target = "_blank";
+  else a.download = name || "cv";
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/**
+ * The parsed CV an employer may read for one application, never with contact details:
+ * { applicationId, status, cv, file, contact }. `file` and `contact` are set only after the candidate accepted.
+ */
+export async function getApplicationCV(applicationId) {
+  if (uses("employer")) return request("GET", `/applications/${encodeURIComponent(applicationId)}/cv`);
+  const db = getDb();
+  const app = db.applications.find((a) => a.id === applicationId);
+  const job = app && db.jobs.find((j) => j.id === app.jobId);
+  if (!app || !job) throw new ApiError("This application could not be found.", 404);
+  if (job.employerId !== store.user?.id) throw new ApiError("Only the employer who posted this job can do that.", 403);
+  if (!app.consent || db.profiles[app.candidateId]?.shareWithEmployers === false) throw new ApiError("This candidate hasn't agreed to share their CV.", 403);
+  const cv = app.cvSnapshot?.cv || db.profiles[app.candidateId]?.cv;
+  if (!cv) throw new ApiError("This application has no CV.", 404);
+  const accepted = appStatus(app) === "accepted";
+  const cand = db.users.find((u) => u.id === app.candidateId);
+  return {
+    applicationId, status: appStatus(app),
+    cv: {
+      summary: cv.summary || "", skills: cv.skills || [], otherSkills: cv.otherSkills || [], education: cv.education || [],
+      experience: cv.experience || [], projects: cv.projects || [], certifications: cv.certifications || [], experienceYears: cv.experienceYears || 0,
+    },
+    file: accepted ? app.cvSnapshot?.cvFile || null : null,
+    contact: accepted && cand ? { name: cand.name, email: cand.email, phone: cv.contact?.phone || null } : null,
+  };
+}
+
+/** Downloads the original CV (PDFs open in a new tab). Only works once the candidate accepted the shortlist. */
+export async function downloadApplicationCV(applicationId, fileName = "") {
+  if (uses("employer")) {
+    let res;
+    try {
+      res = await fetch(`${API_URL}/applications/${encodeURIComponent(applicationId)}/cv-file`, { headers: { Authorization: `Bearer ${getToken()}` } });
+    } catch {
+      throw new ApiError(OFFLINE, 0, null, true);
+    }
+    if (!res.ok) throw new ApiError(errorMessage(await res.json().catch(() => null), res.status), res.status);
+    // Needs Content-Disposition in the backend's CORS expose_headers (it is).
+    const header = res.headers.get("Content-Disposition") || "";
+    const utf8 = /filename\*=utf-8''([^;]+)/i.exec(header)?.[1];
+    const plain = /filename="([^"]+)"/i.exec(header)?.[1];
+    return deliverFile(await res.blob(), (utf8 && decodeURIComponent(utf8)) || plain || fileName || "cv", res.headers.get("Content-Type")?.split(";")[0]);
+  }
+  const { file } = await getApplicationCV(applicationId);
+  if (!file) throw new ApiError("The original CV is available after the candidate accepts your shortlist.", 403);
+  const blob = await readCVFile(file.id);
+  if (!blob) throw new ApiError("The original CV file is not available.", 404);
+  deliverFile(blob, file.name, file.contentType);
 }
 
 /* =========================================================

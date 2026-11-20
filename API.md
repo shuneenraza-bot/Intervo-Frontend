@@ -37,6 +37,9 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `getCandidates` | GET | `/jobs/{jobId}/candidates` | employer (owner) |
 | `setApplicationStatus` | PATCH | `/applications/{applicationId}/status` | employer (owner) |
 | `getMyApplications` | GET | `/applications/mine` | candidate |
+| `getApplicationCV` | GET | `/applications/{applicationId}/cv` | employer (owner) |
+| `downloadApplicationCV` | GET | `/applications/{applicationId}/cv-file` | employer (owner), after the candidate accepts |
+| (account deletion) | DELETE | `/auth/me` | candidate |
 | `respondToApplication` | POST | `/applications/{applicationId}/respond` | candidate (own) |
 | `getNotifications` | GET | `/notifications` | any signed-in user |
 | `getUnreadCount` | GET | `/notifications/unread-count` | any signed-in user |
@@ -124,10 +127,17 @@ Extracts text from a CV and parses it into sections. **Also saves the result on 
 
 Request: `multipart/form-data` containing **either** `file` (PDF/DOCX/TXT, max 5 MB) **or** `text` (pasted CV).
 
+The server **also keeps the original file** under `storage/cvs/` with a random name (pasted text is stored as `pasted-cv.txt`). The file name, type, size and upload date are saved in the database. Only the latest upload is the candidate's current CV; an older file is deleted once no application needs it.
+
 Response `200`:
 ```json
-{ "cv": ParsedCV, "text": "full extracted plain text" }
+{
+  "cv": ParsedCV,
+  "text": "full extracted plain text",
+  "file": { "name": "ayesha_cv.pdf", "size": 48213, "contentType": "application/pdf", "uploadedAt": 1795174727547 }
+}
 ```
+`file` is `null` for a CV uploaded before files were kept. `GET /cv` returns the same shape.
 Errors: `422` with a helpful `detail`, e.g. `"This PDF has almost no selectable text — it is probably a scanned image…"`.
 
 ### POST `/jd/parse`
@@ -213,10 +223,12 @@ Response `201` / `200`: the stored `Job`.
 ### POST `/jobs/{jobId}/apply`
 Request: `{ "consent": true }`. Consent means "share my CV skill match with this employer". Interview results are never shared with employers. If `consent` is true, also set the candidate's `profile.shareWithEmployers = true`.
 
-Response `201`: `Application`. Errors: `409` already applied · `404` job missing or closed.
+**A CV is required.** A candidate without an uploaded CV gets `400` with `detail: "Upload your CV before applying"`. On apply, the server copies the candidate's current parsed CV and a reference to the current CV file into the application (a snapshot). Later uploads or edits never change what that employer received, and the CV match for that application is computed from the snapshot.
+
+Response `201`: `Application`. Errors: `400` no CV · `409` already applied · `404` job missing or closed.
 
 ### DELETE `/jobs/{jobId}/apply`
-Withdraws the caller's application. Response `204`.
+Withdraws the caller's application. Response `204`. The CV file kept for that application is deleted, unless it is the candidate's current CV or another application still uses it. (`DELETE /auth/me` deletes a candidate account with all its applications and stored CV files.)
 
 ### GET `/jobs/{jobId}/candidates`
 Ranks the applicants for one job by **CV skill match only**. Employers never see interview data: no sessions, interview or practice scores, weak skills, session counts, trends or answer text anywhere in this response. Reference: `cvFit` in `src/lib.js`, `getCandidatesSync` in `src/api.js` and `cv_fit` in the backend's `app/services/matching.py`.
@@ -240,7 +252,23 @@ Response `200`:
   ]
 }
 ```
-`cvSummary` is `null` when the candidate has no CV. Nothing else is returned: no profile or CV text. `candidate` is only `{ id, name }`. When `application.status` is `"accepted"` the entry also has `contact: { name, email, phone }` (`phone` comes from the candidate's CV and is `null` without one); before that there is no `contact` key and no email or phone anywhere.
+`cvSummary` and `match` come from the CV snapshot taken when the candidate applied. `cvSummary` is `null` when that CV had no summary. Nothing else is returned: no profile or CV text. `candidate` is only `{ id, name }`. When `application.status` is `"accepted"` the entry also has `contact: { name, email, phone }` (`phone` comes from the candidate's CV and is `null` without one); before that there is no `contact` key and no email or phone anywhere.
+
+### GET `/applications/{applicationId}/cv`
+Employer (job owner). The CV the candidate applied with (the snapshot), only for applicants where `application.consent` is true **and** `profile.shareWithEmployers` is not false. Never contains interview data.
+```ts
+ApplicationCV {
+  applicationId: string; status: string;
+  cv: { summary: string; skills: string[]; otherSkills: string[]; education: Education[]; experience: Experience[];
+        projects: Project[]; certifications: string[]; experienceYears: number };   // no name, email, phone, LinkedIn or GitHub
+  file: { name: string; size: number; contentType: string; uploadedAt: number } | null;   // only once status is "accepted"
+  contact: { name: string; email: string; phone: string | null } | null;                   // only once status is "accepted"
+}
+```
+Errors: `403` not the job owner, or the candidate didn't consent · `404` unknown application.
+
+### GET `/applications/{applicationId}/cv-file`
+Employer (job owner). The **original CV file** as uploaded, with its own `Content-Type`. PDFs are sent `inline`, DOCX and TXT as `attachment`. Allowed only when the application is `accepted`, the caller owns the job and the candidate consented; every other case is `403` (`404` for an unknown application, or when no file was stored). The frontend downloads it with the bearer token and saves or opens the blob.
 
 ### Shortlist flow
 

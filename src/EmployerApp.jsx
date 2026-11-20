@@ -308,6 +308,73 @@ function ContactCard({ contact }) {
   );
 }
 
+/** The CV the candidate applied with: the parsed CV without contact details; after they accept, the original file and contact card too. */
+function CVPanel({ target, onClose }) {
+  const { notify } = useStore();
+  const [state, setState] = useState({ loading: true });
+  const appId = target?.app.id;
+  const status = target ? api.appStatus(target.app) : null;
+
+  useEffect(() => {
+    if (!appId) return;
+    let live = true;
+    setState({ loading: true });
+    api.getApplicationCV(appId)
+      .then((data) => live && setState({ data }))
+      .catch((e) => live && setState({ error: e.message }));
+    return () => { live = false; };
+  }, [appId, status]);
+
+  async function download() {
+    try {
+      await api.downloadApplicationCV(appId, state.data?.file?.name);
+    } catch (e) {
+      notify(e.message, "bad");
+    }
+  }
+
+  const { data } = state;
+  const cv = data?.cv;
+  return (
+    <Modal open={!!target} wide onClose={onClose} title={`CV · ${target?.cand.name ?? ""}`}
+      subtitle={data?.contact ? "Contact details were shared when they accepted your shortlist." : "Contact details stay hidden until the candidate accepts your shortlist."}
+      footer={data?.contact ? <><button className="btn btn--ghost" onClick={onClose}>Close</button><button className="btn btn--primary" onClick={download} disabled={!data.file}><Icon name="download" size={15} /> Download original CV</button></> : <button className="btn btn--ghost" onClick={onClose}>Close</button>}>
+      {state.loading && <p className="muted">Loading the CV…</p>}
+      {state.error && <p className="form__error" role="alert"><Icon name="alert" size={16} /> {state.error}</p>}
+      {cv && (
+        <div className="cv-view">
+          {data.contact && <ContactCard contact={data.contact} />}
+          {data.contact && !data.file && <p className="field__hint">The original file isn't available for this application. The parsed CV is shown below.</p>}
+          {cv.summary && <section><h4>Summary</h4><p>{cv.summary}</p></section>}
+          {(cv.skills.length > 0 || cv.otherSkills.length > 0) && (
+            <section><h4>Skills</h4>
+              <div className="chips">{cv.skills.map((s) => <span className="chip chip--good" key={s}>{s}</span>)}{cv.otherSkills.map((s) => <span className="chip" key={s}>{s}</span>)}</div>
+            </section>
+          )}
+          {cv.education.length > 0 && (
+            <section><h4>Education</h4>
+              <ul>{cv.education.map((e, i) => <li key={i}><b>{e.degree || "Degree"}</b>{e.institution && ` · ${e.institution}`}{e.dates && ` · ${e.dates}`}{e.score && ` · ${e.score}`}</li>)}</ul>
+            </section>
+          )}
+          {cv.experience.length > 0 && (
+            <section><h4>Experience{cv.experienceYears ? ` · about ${plural(cv.experienceYears, "year")}` : ""}</h4>
+              <ul>{cv.experience.map((e, i) => <li key={i}><b>{e.title}</b>{e.company && ` · ${e.company}`}{e.dates && ` · ${e.dates}`}{e.details && <p>{e.details}</p>}</li>)}</ul>
+            </section>
+          )}
+          {cv.projects.length > 0 && (
+            <section><h4>Projects</h4>
+              <ul>{cv.projects.map((p, i) => <li key={i}><b>{p.name}</b>{p.details && <p>{p.details}</p>}{p.tech?.length > 0 && <div className="chips">{p.tech.map((t) => <span className="chip" key={t}>{t}</span>)}</div>}</li>)}</ul>
+            </section>
+          )}
+          {cv.certifications.length > 0 && (
+            <section><h4>Certifications</h4><ul>{cv.certifications.map((c) => <li key={c}>{c}</li>)}</ul></section>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 /** The employer's decision for one applicant: shortlist (optional message), stop, or the candidate's answer. */
 function Decision({ app, contact, onShortlist, onStop }) {
   const status = api.appStatus(app);
@@ -351,6 +418,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
   const { job, visible, hidden } = useApplicants(jobId ? [jobId] : [])[jobId] || NO_APPLICANTS;
   const [openId, setOpenId] = useState(null);
   const [shortlisting, setShortlisting] = useState(null); // applicant being shortlisted: { app, cand }
+  const [viewing, setViewing] = useState(null); // applicant whose CV panel is open: { app, cand }
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -446,6 +514,12 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                           ? [cvSummary.topDegree, cvSummary.experienceYears ? `${plural(cvSummary.experienceYears, "yr")} experience` : "No dated experience", cvSummary.projectCount ? plural(cvSummary.projectCount, "project") : null].filter(Boolean).join(" · ")
                           : "No CV summary shared yet"}
                       </p>
+                      <div className="btn-row">
+                        <button className="btn btn--ghost btn--sm" onClick={() => setViewing({ app, cand })}><Icon name="file" size={14} /> View CV</button>
+                        {api.appStatus(app) === "accepted" && (
+                          <button className="btn btn--primary btn--sm" onClick={() => api.downloadApplicationCV(app.id).catch((e) => notify(e.message, "bad"))}><Icon name="download" size={14} /> Download original CV</button>
+                        )}
+                      </div>
                       <Decision app={app} contact={contact}
                         onShortlist={() => { setShortlisting({ app, cand }); setMessage(""); }}
                         onStop={() => changeStatus(app, "not_progressing")} />
@@ -460,6 +534,8 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
         <Card><Empty icon="users" title="No opted-in candidates yet" text="When candidates apply and agree to share, they appear here ranked by CV skill match." /></Card>
       )}
       <Note>Employers see only the CV skill match. Interview answers, scores, practice history and face data are never shown. A candidate's email and phone appear only after they accept your shortlist.</Note>
+
+      <CVPanel target={viewing ? { ...viewing, app: visible.find((v) => v.app.id === viewing.app.id)?.app || viewing.app } : null} onClose={() => setViewing(null)} />
 
       <Modal
         open={!!shortlisting}

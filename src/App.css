@@ -1833,3 +1833,15 @@ textarea::placeholder { color: var(--placeholder); }
 .contact-card li .icon { flex: none; color: var(--good-ink); }
 .contact-card a { color: var(--brand-600); }
 @media (max-width: 640px) { .app-card__head { flex-direction: column; } }
+
+/* ---------- CV shared with an employer ---------- */
+.cv-share { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding: 12px 14px; border: 1px solid var(--good-line); border-radius: var(--r-md); background: var(--good-bg); color: var(--good-ink); font-size: 13px; }
+.cv-share p { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.cv-share .btn { position: relative; cursor: pointer; white-space: nowrap; }
+.is-disabled { opacity: .6; pointer-events: none; }
+.dropzone.is-disabled { opacity: .7; }
+.cv-view { display: grid; gap: 18px; }
+.cv-view h4 { margin-bottom: 6px; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.cv-view ul { display: grid; gap: 10px; }
+.cv-view li p { margin-top: 2px; color: var(--ink-2); font-size: 13px; line-height: 1.55; }
+.cv-view li .chips { margin-top: 6px; }
