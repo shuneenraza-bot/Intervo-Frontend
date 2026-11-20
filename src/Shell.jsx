@@ -2,12 +2,14 @@ import { Icon } from "./Icons";
 import { initials } from "./lib";
 import { Brand, ThemeToggle, Toast } from "./ui";
 import { useStore } from "./store";
+import NotificationBell from "./NotificationBell";
 
 export const NAV = {
   candidate: [
     { id: "overview", label: "Overview", icon: "home" },
     { id: "cv", label: "CV & Skill Gap", icon: "file" },
     { id: "jobs", label: "Job Matches", icon: "briefcase" },
+    { id: "applications", label: "My Applications", icon: "clipboard" },
     { id: "interview", label: "Mock Interview", icon: "mic" },
     { id: "progress", label: "Progress", icon: "chart" },
     { id: "profile", label: "Profile & Privacy", icon: "shield" },
@@ -76,6 +78,7 @@ export function Shell({ page, go, menuOpen, setMenuOpen, badges = {}, promo, chi
           <div className="topbar__right">
             <span className={`role-pill role-pill--${user.role}`}><Icon name={user.role === "employer" ? "building" : user.role === "admin" ? "settings" : "user"} size={13} /> {user.role}</span>
             <span className="status-pill" title="Signed in with password + face verification"><Icon name="shield" size={14} /> Face verified</span>
+            {user.role !== "admin" && <NotificationBell go={go} />}
             <ThemeToggle />
           </div>
         </header>

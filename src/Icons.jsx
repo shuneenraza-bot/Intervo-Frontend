@@ -259,6 +259,19 @@ const PATHS = {
     </>
   ),
   wave: <path d="M3.5 12h2M8 8v8M12 5v14M16 8.5v7M20.5 12h0" />,
+  bell: (
+    <>
+      <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 1.5h-15z" />
+      <path d="M10 20.5a2.2 2.2 0 0 0 4 0" />
+    </>
+  ),
+  phone: <path d="M6.5 3.5h3l1.5 4-2 1.3a10 10 0 0 0 6.2 6.2l1.3-2 4 1.5v3a2 2 0 0 1-2 2A15.5 15.5 0 0 1 4.5 5.5a2 2 0 0 1 2-2z" />,
+  clipboard: (
+    <>
+      <rect x="5.5" y="4.5" width="13" height="16" rx="2" />
+      <path d="M9 4.5V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v.5M9 11h6M9 15h4" />
+    </>
+  ),
 };
 
 export function Icon({ name, size = 18, strokeWidth = 1.8, className = "", filled = false }) {

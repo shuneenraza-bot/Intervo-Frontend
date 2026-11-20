@@ -35,7 +35,13 @@ The endpoints the FastAPI backend must provide for the frontend. The frontend ca
 | `withdrawApplication` | DELETE | `/jobs/{jobId}/apply` | candidate |
 | `setJobStatus` | PATCH | `/jobs/{jobId}/status` | employer (owner) |
 | `getCandidates` | GET | `/jobs/{jobId}/candidates` | employer (owner) |
-| `setApplicationStatus` | PATCH | `/applications/{applicationId}` | employer (owner) |
+| `setApplicationStatus` | PATCH | `/applications/{applicationId}/status` | employer (owner) |
+| `getMyApplications` | GET | `/applications/mine` | candidate |
+| `respondToApplication` | POST | `/applications/{applicationId}/respond` | candidate (own) |
+| `getNotifications` | GET | `/notifications` | any signed-in user |
+| `getUnreadCount` | GET | `/notifications/unread-count` | any signed-in user |
+| `markNotificationRead` | POST | `/notifications/{id}/read` | any signed-in user (own) |
+| `markAllNotificationsRead` | POST | `/notifications/read-all` | any signed-in user |
 | `loadAdminData`, `addDomain`, `saveRole`, `saveSkill`, `saveQuestion`, `setCriterion`, `setRules` … | GET / POST / PUT / DELETE | `/admin/*` (see [Admin endpoints](#admin-endpoints)) | admin |
 
 ---
@@ -234,10 +240,40 @@ Response `200`:
   ]
 }
 ```
-`cvSummary` is `null` when the candidate has no CV. Nothing else is returned: no profile, CV text or contact details.
+`cvSummary` is `null` when the candidate has no CV. Nothing else is returned: no profile or CV text. `candidate` is only `{ id, name }`. When `application.status` is `"accepted"` the entry also has `contact: { name, email, phone }` (`phone` comes from the candidate's CV and is `null` without one); before that there is no `contact` key and no email or phone anywhere.
 
-### PATCH `/applications/{applicationId}`
-Request: `{ "status": "shortlisted" }`. Allowed values: `"new"`, `"shortlisted"`, `"declined"`. Response `200`: `Application`.
+### Shortlist flow
+
+`applied → shortlisted → accepted | declined_by_candidate`. The employer can also set `not_progressing`. Every change is stored with its time, the employer's `employerMessage` and the candidate's `candidateNote`.
+
+### PATCH `/applications/{applicationId}/status`
+Employer (job owner). Request: `{ "status": "shortlisted" | "not_progressing", "message"?: string }` (`message` up to 500 characters, else `422`). Response `200`: `Application`. The candidate gets a notification. Errors: `403` not the job owner · `404` unknown application · `409` the candidate has already answered, or the application already has that status.
+
+### GET `/applications/mine`
+Candidate. Their own applications, newest first:
+```ts
+MyApplication {
+  id: string; jobId: string; jobTitle: string; company: string;
+  status: "applied" | "shortlisted" | "accepted" | "declined_by_candidate" | "not_progressing";
+  employerMessage: string | null; candidateNote: string | null;
+  appliedAt: number; updatedAt: number;
+  history: { status: string; at: number; employerMessage?: string; candidateNote?: string }[];
+  employer: { name: string; company: string | null; email: string } | null;   // only once status is "accepted"
+}
+```
+
+### POST `/applications/{applicationId}/respond`
+Candidate (own application). Request: `{ "decision": "accept" | "decline", "note"?: string }` (`note` up to 500 characters). Response `200`: `MyApplication`. Errors: `403` not their application · `409` not shortlisted, or already answered (an answer can't be changed) · `422` bad decision or long note. The employer gets a notification. Accepting shares contact details both ways; declining shares nothing.
+
+### Notifications
+Each user sees only their own. `Notification { id, type: "shortlisted" | "not_progressing" | "accepted" | "declined", title, body, link, createdAt, readAt: number | null, read: boolean }`. `link` is an in-app route: `/applications` for candidates, `/candidates?job={jobId}` for employers.
+
+| Method | Path | Response |
+|---|---|---|
+| GET | `/notifications?limit=50` | `Notification[]`, newest first (limit 1 to 100) |
+| GET | `/notifications/unread-count` | `{ "count": number }` (the bell polls this every 30 s) |
+| POST | `/notifications/{id}/read` | `Notification`; `404` for an unknown or someone else's id |
+| POST | `/notifications/read-all` | `{ "count": 0 }` |
 
 ---
 
@@ -331,7 +367,8 @@ Job {
 Application {
   id: string; jobId: string; candidateId: string;
   date: number; consent: boolean;
-  status?: "new" | "shortlisted" | "declined";
+  status: "applied" | "shortlisted" | "accepted" | "declined_by_candidate" | "not_progressing";
+  employerMessage?: string | null; candidateNote?: string | null; updatedAt?: number;
 }
 
 CVMatch {                           // the only per-candidate result employers get

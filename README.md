@@ -38,7 +38,7 @@ Status at the 30% evaluation. "Where it runs" matters because part of the system
 | 7 | Presentation cues in video mode | Eye contact and expressiveness from face landmarks | Browser (MediaPipe) | ✅ Done |
 | 8 | Progress tracking | Score trend, per-skill history and persistent weakness detection | Browser; session scores are also saved to PostgreSQL | ✅ Done |
 | 9 | Job matching and applications | Candidates see match scores, apply with explicit consent and can withdraw | Backend | ✅ Done |
-| 10 | Employer module | Job postings with weighted skills and success criteria; candidates ranked by CV skill match only (never interview scores); shortlist or decline | Backend | ✅ Done |
+| 10 | Employer module | Job postings with weighted skills and success criteria; candidates ranked by CV skill match only (never interview scores); shortlist (with an optional message) or stop; candidates accept or decline in My Applications; contact details are shared only after they accept; bell notifications | Backend | ✅ Done |
 | 11 | Admin configuration | Domains and roles, skills, question templates, criteria and rules, users | Backend (`admin` module), or browser when it is off | ✅ Done |
 | 12 | Privacy controls | Consent when applying, sharing switch, withdraw an application, re-enrol face, export data, delete history or account | Consent, sharing switch, withdraw and face re-enrolment on backend; export and deletion in browser | ✅ Done · ⏳ deletion on the server |
 | 13 | Deployment | Hosted demo | Not started | ⏳ Planned |
@@ -182,7 +182,7 @@ VITE_API_URL=http://localhost:8000/api
 | Module | What goes to the backend |
 |---|---|
 | `auth` | Sign up, two-step sign in (password, then face enrol or verify), face re-enrol, current user. The JWT is stored in the browser; a `401` signs the user out. |
-| `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking by CV skill match. Also copies the candidate's skills and CV summary to the server. Needs `auth`. |
+| `employer` | Configuration (`GET /api/config`), job postings (list, create, edit, close/reopen), apply/withdraw, application status, candidate ranking by CV skill match, the shortlist flow (shortlist, accept/decline, contact sharing) and notifications. Also copies the candidate's skills and CV summary to the server. Needs `auth`. |
 | `candidate` | CV upload and edits (`/cv`), job-description parsing and skill-gap match (`/jd/parse`, `/cv/match`), the mock interview (`/interviews`: server-chosen questions, Gemini or rule-based scoring, Whisper transcription of voice and video answers, follow-ups, finish), and progress. With it on, the profile and session copy described for `employer` is no longer sent. Needs `auth`. |
 | `admin` | The admin console (`/api/admin/*`): domains, roles, skills, question templates, evaluation criteria, scoring rules, the user list and overview counts. Admin accounts only; needs `auth`. |
 

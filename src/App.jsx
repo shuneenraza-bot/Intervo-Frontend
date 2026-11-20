@@ -5,6 +5,7 @@ import "./App.css";
 
 import { StoreProvider, useStore } from "./store";
 import { skillPerformance } from "./lib";
+import { appStatus } from "./api";
 import { navigate, useHashPath } from "./router";
 import { Shell } from "./Shell";
 import Auth from "./Auth";
@@ -71,6 +72,12 @@ function Root() {
     return skillPerformance(db.sessions.filter((s) => s.userId === user.id), db.config.rules).filter((p) => p.weak).length;
   }, [db, user]);
 
+  // Shortlists waiting for the candidate's answer
+  const awaiting = useMemo(
+    () => (user?.role === "candidate" ? db.applications.filter((a) => a.candidateId === user.id && appStatus(a) === "shortlisted").length : 0),
+    [db.applications, user]
+  );
+
   function go(id, nextParams = {}) {
     setPage(id);
     setParams(nextParams);
@@ -103,7 +110,7 @@ function Root() {
       go={go}
       menuOpen={menuOpen}
       setMenuOpen={setMenuOpen}
-      badges={user.role === "candidate" ? { progress: weakCount } : {}}
+      badges={user.role === "candidate" ? { progress: weakCount, applications: awaiting } : {}}
       promo={user.role === "candidate" ? <CandidatePromo go={go} weakCount={weakCount} /> : null}
     >
       <main className="content" key={`${user.id}-${page}-${navKey}`}>

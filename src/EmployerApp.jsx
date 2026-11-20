@@ -287,16 +287,85 @@ function RangeField({ label, value, onChange }) {
 
 /* ---------------- Candidates ranked by CV skill match ---------------- */
 
-const STATUS = [
-  { value: "new", label: "New" },
-  { value: "shortlisted", label: "Shortlisted" },
-  { value: "declined", label: "Not progressing" },
-];
+const STATUS_BADGE = {
+  shortlisted: ["warn", "Waiting for response"],
+  accepted: ["good", "Accepted"],
+  declined_by_candidate: ["low", "Declined"],
+  not_progressing: ["muted", "Not progressing"],
+};
+
+/** Name, email and phone: shown only after the candidate has accepted the shortlist. */
+function ContactCard({ contact }) {
+  return (
+    <div className="contact-card">
+      <h4><Icon name="checkCircle" size={15} /> Contact details shared</h4>
+      <ul>
+        <li><Icon name="user" size={15} /> {contact.name}</li>
+        <li><Icon name="mail" size={15} /> <a href={`mailto:${contact.email}`}>{contact.email}</a></li>
+        <li><Icon name="phone" size={15} /> {contact.phone ? <a href={`tel:${contact.phone}`}>{contact.phone}</a> : <span className="muted">No phone number on their CV</span>}</li>
+      </ul>
+    </div>
+  );
+}
+
+/** The employer's decision for one applicant: shortlist (optional message), stop, or the candidate's answer. */
+function Decision({ app, contact, onShortlist, onStop }) {
+  const status = api.appStatus(app);
+  return (
+    <div className="field">
+      <label>Your decision</label>
+      {(status === "applied" || status === "not_progressing") && (
+        <div className="btn-row">
+          <button className="btn btn--primary btn--sm" onClick={onShortlist}><Icon name="star" size={14} /> Shortlist</button>
+          {status === "applied" && <button className="btn btn--ghost btn--sm" onClick={onStop}>Not progressing</button>}
+        </div>
+      )}
+      {status === "not_progressing" && <p className="field__hint">Marked as not progressing. The candidate was notified.</p>}
+      {status === "shortlisted" && (
+        <>
+          <div className="btn-row">
+            <span className="badge badge--warn"><Icon name="clock" size={12} /> Waiting for response</span>
+            <button className="btn btn--ghost btn--sm" onClick={onStop}>Not progressing</button>
+          </div>
+          {app.employerMessage && <blockquote className="app-quote"><small>Your message</small>{app.employerMessage}</blockquote>}
+        </>
+      )}
+      {status === "accepted" && (
+        <>
+          {app.candidateNote && <blockquote className="app-quote app-quote--you"><small>Their note</small>{app.candidateNote}</blockquote>}
+          {contact && <ContactCard contact={contact} />}
+        </>
+      )}
+      {status === "declined_by_candidate" && (
+        <>
+          <p className="field__hint">The candidate declined. No contact details were shared.</p>
+          {app.candidateNote && <blockquote className="app-quote app-quote--you"><small>Their note</small>{app.candidateNote}</blockquote>}
+        </>
+      )}
+    </div>
+  );
+}
 
 function Candidates({ myJobs, jobId, setJobId, go }) {
   const { db, notify } = useStore();
   const { job, visible, hidden } = useApplicants(jobId ? [jobId] : [])[jobId] || NO_APPLICANTS;
   const [openId, setOpenId] = useState(null);
+  const [shortlisting, setShortlisting] = useState(null); // applicant being shortlisted: { app, cand }
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function changeStatus(app, status, text = "") {
+    setBusy(true);
+    try {
+      await api.setApplicationStatus(app.id, status, text);
+      notify(status === "shortlisted" ? "Shortlisted: the candidate has been notified" : "Marked as not progressing: the candidate has been notified");
+      setShortlisting(null);
+    } catch (e) {
+      notify(e.message, "bad");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   if (!myJobs.length) return (
     <>
@@ -318,7 +387,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
 
       {visible.length ? (
         <div className="cand-list">
-          {visible.map(({ app, cand, cvSummary, match }, rank) => {
+          {visible.map(({ app, cand, cvSummary, match, contact }, rank) => {
             const open = openId === app.id;
             const skillState = (name) => (match.matched.some((m) => m.name === name) ? "match" : match.partial.some((m) => m.name === name) ? "partial" : "missing");
             return (
@@ -334,6 +403,7 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                     <div title={`${match.matched.length} matched, ${match.partial.length} partial, ${match.missing.length} missing`}><span>CV skill match</span><Meter value={match.percentage} /><b>{match.percentage}</b></div>
                   </div>
                   {match.meetsCriteria ? <span className="badge badge--good"><Icon name="checkCircle" size={12} /> Meets criteria</span> : <span className="badge badge--muted">Below criteria</span>}
+                  {STATUS_BADGE[api.appStatus(app)] && <span className={`badge badge--${STATUS_BADGE[api.appStatus(app)][0]}`}>{STATUS_BADGE[api.appStatus(app)][1]}</span>}
                   <ScoreRing value={match.percentage} size={58} stroke={6} tone={match.percentage > 0 ? undefined : "muted"} />
                   <Icon name="chevronDown" size={18} className="cand__chev" />
                 </button>
@@ -376,10 +446,9 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
                           ? [cvSummary.topDegree, cvSummary.experienceYears ? `${plural(cvSummary.experienceYears, "yr")} experience` : "No dated experience", cvSummary.projectCount ? plural(cvSummary.projectCount, "project") : null].filter(Boolean).join(" · ")
                           : "No CV summary shared yet"}
                       </p>
-                      <div className="field">
-                        <label>Your decision</label>
-                        <Segmented options={STATUS} value={app.status || "new"} onChange={(v) => api.setApplicationStatus(app.id, v).catch((e) => notify(e.message, "bad"))} />
-                      </div>
+                      <Decision app={app} contact={contact}
+                        onShortlist={() => { setShortlisting({ app, cand }); setMessage(""); }}
+                        onStop={() => changeStatus(app, "not_progressing")} />
                     </div>
                   </div>
                 )}
@@ -390,7 +459,26 @@ function Candidates({ myJobs, jobId, setJobId, go }) {
       ) : (
         <Card><Empty icon="users" title="No opted-in candidates yet" text="When candidates apply and agree to share, they appear here ranked by CV skill match." /></Card>
       )}
-      <Note>Employers see only the CV skill match. Interview answers, scores, practice history, face data and contact details beyond the name and email are never shown.</Note>
+      <Note>Employers see only the CV skill match. Interview answers, scores, practice history and face data are never shown. A candidate's email and phone appear only after they accept your shortlist.</Note>
+
+      <Modal
+        open={!!shortlisting}
+        title={`Shortlist ${shortlisting?.cand.name ?? ""}?`}
+        subtitle="They are notified and decide whether to share their contact details with you."
+        onClose={() => !busy && setShortlisting(null)}
+        footer={
+          <>
+            <button className="btn btn--ghost" onClick={() => setShortlisting(null)} disabled={busy}>Cancel</button>
+            <button className="btn btn--primary" onClick={() => changeStatus(shortlisting.app, "shortlisted", message)} disabled={busy}>{busy ? "Sending…" : "Shortlist & notify"}</button>
+          </>
+        }
+      >
+        <div className="field">
+          <label htmlFor="shortlist-msg">Message to the candidate (optional)</label>
+          <textarea id="shortlist-msg" rows={4} maxLength={500} data-lenis-prevent value={message} onChange={(e) => setMessage(e.target.value)} placeholder="For example: we liked your portfolio and would like to talk." />
+          <span className="field__hint">{message.length}/500</span>
+        </div>
+      </Modal>
     </>
   );
 }

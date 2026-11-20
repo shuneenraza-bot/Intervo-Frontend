@@ -722,7 +722,7 @@ export async function applyToJob({ jobId, candidateId, consent }) {
   await syncCandidateData(candidateId); // the employer's ranking reads the server copy
   const application = uses("employer")
     ? await request("POST", `/jobs/${encodeURIComponent(jobId)}/apply`, { consent })
-    : { id: uid("app"), jobId, candidateId, date: Date.now(), consent };
+    : { id: uid("app"), jobId, candidateId, date: Date.now(), consent, status: "applied", history: [{ status: "applied", at: Date.now() }] };
   write((d) => {
     upsert(d.applications, application);
     if (consent) d.profiles[candidateId] = { ...d.profiles[candidateId], shareWithEmployers: true };
@@ -736,13 +736,156 @@ export async function withdrawApplication({ jobId, candidateId }) {
   write((d) => { d.applications = d.applications.filter((a) => !(a.jobId === jobId && a.candidateId === candidateId)); });
 }
 
-/** Employer moves an application through the pipeline: "new" | "shortlisted" | "declined". */
-export async function setApplicationStatus(applicationId, status) {
-  if (uses("employer")) await request("PATCH", `/applications/${encodeURIComponent(applicationId)}`, { status });
+/* ---------- Shortlist flow ----------
+ * applied → shortlisted → accepted | declined_by_candidate; the employer can also set
+ * not_progressing. Contact details are shared only after the candidate accepts.
+ * Local mode keeps the same rules in the store (db.applications[].history, db.notifications). */
+
+/** Statuses from before the shortlist flow: "new" → applied, "declined" → not_progressing. */
+export const appStatus = (a) => (!a?.status || a.status === "new" ? "applied" : a.status === "declined" ? "not_progressing" : a.status);
+
+const MAX_NOTE = 500;
+const trimNote = (text) => String(text ?? "").trim().slice(0, MAX_NOTE) || null;
+
+function pushNotification(d, userId, type, title, body, link) {
+  (d.notifications ??= []).push({ id: uid("ntf"), userId, type, title, body, link, createdAt: Date.now(), readAt: null });
+}
+
+function addHistory(app, status, extra = {}) {
+  app.status = status;
+  app.updatedAt = Date.now();
+  (app.history ??= [{ status: "applied", at: app.date }]).push({ status, at: app.updatedAt, ...extra });
+}
+
+/**
+ * Employer shortlists an application (optional `message`, up to 500 characters) or sets it to
+ * "not_progressing". The candidate is notified. Resolves with the updated application.
+ */
+export async function setApplicationStatus(applicationId, status, message = "") {
+  if (uses("employer")) {
+    const saved = await request("PATCH", `/applications/${encodeURIComponent(applicationId)}/status`, { status, message: trimNote(message) });
+    write((d) => upsert(d.applications, saved));
+    return saved;
+  }
+  const db = getDb();
+  const app = db.applications.find((a) => a.id === applicationId);
+  if (!app) throw new ApiError("This application could not be found.", 404);
+  const from = appStatus(app);
+  if (from === "accepted" || from === "declined_by_candidate") throw new ApiError("The candidate has already responded to this application.", 409);
+  if (from === status) throw new ApiError(`This application is already ${status.replace("_", " ")}.`, 409);
+  const note = trimNote(message);
+  const job = db.jobs.find((j) => j.id === app.jobId);
   write((d) => {
-    const app = d.applications.find((a) => a.id === applicationId);
-    if (app) app.status = status;
+    const a = d.applications.find((x) => x.id === applicationId);
+    addHistory(a, status, { employerMessage: note });
+    a.employerMessage = note;
+    const said = note ? ` They said: "${note}"` : "";
+    if (status === "shortlisted") pushNotification(d, a.candidateId, "shortlisted", `You've been shortlisted for ${job?.title}`, `${job?.company} would like to move forward with your application.${said} Accept or decline in My Applications.`, "/applications");
+    else pushNotification(d, a.candidateId, "not_progressing", `Update on your application for ${job?.title}`, `${job?.company} won't be moving forward with your application.${said}`, "/applications");
   });
+  return { ...app, status, employerMessage: note };
+}
+
+/** One of the signed-in candidate's applications in the shape of GET /applications/mine. */
+function myApplicationShape(db, app) {
+  const job = db.jobs.find((j) => j.id === app.jobId) || {};
+  const status = appStatus(app);
+  const history = app.history || [{ status: "applied", at: app.date }];
+  const boss = status === "accepted" ? db.users.find((u) => u.id === job.employerId) : null;
+  return {
+    id: app.id, jobId: app.jobId, jobTitle: job.title || "Removed job", company: job.company || "", status,
+    employerMessage: [...history].reverse().find((h) => h.employerMessage)?.employerMessage ?? null,
+    candidateNote: [...history].reverse().find((h) => h.candidateNote)?.candidateNote ?? null,
+    appliedAt: app.date, updatedAt: history[history.length - 1].at, history,
+    employer: boss ? { name: boss.name, company: boss.company || job.company, email: boss.email } : null,
+  };
+}
+
+/** Local-mode "My Applications", without the Promise so the page renders in the same frame. Null when the backend serves it. */
+export function getMyApplicationsSync(db = getDb()) {
+  if (uses("employer")) return null;
+  const me = store?.user;
+  return db.applications.filter((a) => a.candidateId === me?.id).sort((a, b) => b.date - a.date).map((a) => myApplicationShape(db, a));
+}
+
+/** The candidate's own applications, newest first (employer contact only after they accepted). */
+export async function getMyApplications() {
+  if (!uses("employer")) return getMyApplicationsSync();
+  const list = await request("GET", "/applications/mine");
+  write((d) => list.forEach((m) => {
+    const a = d.applications.find((x) => x.id === m.id);
+    if (a) Object.assign(a, { status: m.status, employerMessage: m.employerMessage, candidateNote: m.candidateNote, updatedAt: m.updatedAt });
+  }));
+  return list;
+}
+
+/**
+ * Candidate answers a shortlist: decision "accept" | "decline", optional note (500 characters).
+ * Only allowed while the status is shortlisted. Resolves with the application as in getMyApplications.
+ */
+export async function respondToApplication(applicationId, decision, note = "") {
+  if (uses("employer")) {
+    const saved = await request("POST", `/applications/${encodeURIComponent(applicationId)}/respond`, { decision, note: trimNote(note) });
+    write((d) => {
+      const a = d.applications.find((x) => x.id === applicationId);
+      if (a) Object.assign(a, { status: saved.status, employerMessage: saved.employerMessage, candidateNote: saved.candidateNote, updatedAt: saved.updatedAt });
+    });
+    return saved;
+  }
+  const db = getDb();
+  const app = db.applications.find((a) => a.id === applicationId);
+  if (!app) throw new ApiError("This application could not be found.", 404);
+  if (app.candidateId !== store.user?.id) throw new ApiError("You can only respond to your own applications.", 403);
+  const from = appStatus(app);
+  if (from === "accepted" || from === "declined_by_candidate") throw new ApiError("You've already responded to this application.", 409);
+  if (from !== "shortlisted") throw new ApiError("You can only respond once you've been shortlisted.", 409);
+  const text = trimNote(note);
+  const accepted = decision === "accept";
+  const job = db.jobs.find((j) => j.id === app.jobId);
+  const me = store.user;
+  write((d) => {
+    const a = d.applications.find((x) => x.id === applicationId);
+    addHistory(a, accepted ? "accepted" : "declined_by_candidate", { candidateNote: text });
+    a.candidateNote = text;
+    if (job?.employerId) {
+      const said = text ? ` They said: "${text}"` : "";
+      const link = `/candidates?job=${job.id}`;
+      if (accepted) pushNotification(d, job.employerId, "accepted", `${me.name} accepted your shortlist for ${job.title}`, `Their contact details are now on the Candidates page.${said}`, link);
+      else pushNotification(d, job.employerId, "declined", `${me.name} declined your shortlist for ${job.title}`, `No contact details were shared.${said}`, link);
+    }
+  });
+  return myApplicationShape(getDb(), { ...app, status: accepted ? "accepted" : "declined_by_candidate", history: [...(app.history || [{ status: "applied", at: app.date }]), { status: accepted ? "accepted" : "declined_by_candidate", at: Date.now(), candidateNote: text }] });
+}
+
+/* ---------- Notifications ---------- */
+
+const localNotifications = (db) => (db.notifications || []).filter((n) => n.userId === store?.user?.id).sort((a, b) => b.createdAt - a.createdAt);
+const notificationShape = (n) => ({ ...n, read: n.readAt != null });
+
+/** Local-mode notifications without the Promise (the bell reads these straight from the store). Null when the backend serves them. */
+export function getNotificationsSync(db = getDb()) {
+  return uses("employer") ? null : localNotifications(db).map(notificationShape);
+}
+
+/** The signed-in user's notifications, newest first. */
+export async function getNotifications() {
+  return uses("employer") ? request("GET", "/notifications") : getNotificationsSync();
+}
+
+/** Number of unread notifications. Cheap enough to poll. */
+export async function getUnreadCount() {
+  if (uses("employer")) return (await request("GET", "/notifications/unread-count")).count;
+  return localNotifications(getDb()).filter((n) => n.readAt == null).length;
+}
+
+export async function markNotificationRead(id) {
+  if (uses("employer")) await request("POST", `/notifications/${encodeURIComponent(id)}/read`);
+  else write((d) => { const n = (d.notifications || []).find((x) => x.id === id); if (n && n.readAt == null) n.readAt = Date.now(); });
+}
+
+export async function markAllNotificationsRead() {
+  if (uses("employer")) await request("POST", "/notifications/read-all");
+  else write((d) => (d.notifications || []).forEach((n) => { if (n.userId === store.user?.id && n.readAt == null) n.readAt = Date.now(); }));
 }
 
 /**
@@ -754,7 +897,7 @@ export async function setApplicationStatus(applicationId, status) {
 export async function getCandidates(jobId) {
   if (uses("employer")) {
     const { job, candidates, hidden } = await request("GET", `/jobs/${encodeURIComponent(jobId)}/candidates`);
-    const visible = candidates.map((c) => ({ app: c.application, cand: c.candidate, cvSummary: c.cvSummary, match: c.match }));
+    const visible = candidates.map((c) => ({ app: c.application, cand: c.candidate, cvSummary: c.cvSummary, match: c.match, contact: c.contact || null }));
     return { job, visible, hidden }; // the backend already ranks them
   }
   return getCandidatesSync(jobId);
@@ -793,7 +936,9 @@ export function getCandidatesSync(jobId, db = getDb()) {
     const cv = profile?.cv;
     const cvSummary = cv ? { topDegree: cv.education?.[0]?.degree || null, experienceYears: cv.experienceYears || 0, projectCount: cv.projects?.length || 0 } : null;
     const match = cvFit({ job, profile, config: db.config, checks: requirementChecks(job, profile) });
-    visible.push({ app, cand, cvSummary, match });
+    // Contact details only once the candidate has accepted the shortlist.
+    const contact = appStatus(app) === "accepted" ? { name: cand.name, email: cand.email, phone: cv?.contact?.phone || null } : null;
+    visible.push({ app: { ...app, status: appStatus(app) }, cand: { id: cand.id, name: cand.name }, cvSummary, match, contact });
   });
   visible.sort((a, b) => b.match.percentage - a.match.percentage); // stable: ties keep application order
   return { job, visible, hidden };

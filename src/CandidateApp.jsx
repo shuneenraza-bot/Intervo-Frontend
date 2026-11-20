@@ -9,6 +9,7 @@ import JobsPage from "./JobsPage";
 import InterviewPage from "./InterviewPage";
 import ProgressPage from "./ProgressPage";
 import ProfilePage from "./ProfilePage";
+import ApplicationsPage from "./ApplicationsPage";
 
 /** Candidate portal: derives shared data once and hands it to each page. */
 export default function CandidateApp({ page, go }) {
@@ -41,6 +42,7 @@ export default function CandidateApp({ page, go }) {
       {page === "overview" && <Overview {...ctx} />}
       {page === "cv" && <CVPage {...ctx} />}
       {page === "jobs" && <JobsPage {...ctx} />}
+      {page === "applications" && <ApplicationsPage {...ctx} />}
       {page === "interview" && <InterviewPage {...ctx} />}
       {page === "progress" && <ProgressPage {...ctx} />}
       {page === "profile" && <ProfilePage {...ctx} />}
