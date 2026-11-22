@@ -232,6 +232,10 @@ export function cvFit({ job, profile, config, checks = [] }) {
  */
 export const isLandmarkTemplate = (t) => t?.v === 2 && Array.isArray(t.features);
 export const isLegacyTemplate = (t) => Array.isArray(t);
+/** A face is enrolled: the backend only says so (`face.enrolled`), local mode keeps the template itself. */
+export const hasFace = (user) => user?.face?.enrolled === true || isLandmarkTemplate(user?.face?.template);
+/** The sign-up password rule (the server enforces the same): 8+ characters, upper and lower case, a digit. */
+export const passwordMeetsRules = (pw = "") => pw.length >= 8 && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /\d/.test(pw);
 
 const T = 24;
 

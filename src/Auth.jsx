@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { DEMO_ACCOUNTS } from "./data";
-import { firstName, passwordStrength } from "./lib";
+import { firstName, passwordMeetsRules, passwordStrength } from "./lib";
 import * as api from "./api";
 import { navigate } from "./router";
 import { Brand, Meter, ThemeToggle } from "./ui";
@@ -172,7 +172,7 @@ function SignIn({ role, setRole }) {
         {faceEnrolled ? (
           <FaceCapture
             mode="verify"
-            verify={(template) => api.completeFace({ template, remember })}
+            verify={(template, liveness) => api.completeFace({ template, liveness, remember })}
             onComplete={finish}
             onFail={(err) => { if (api.needsPassword(err)) backToPassword(err); }}
           />
@@ -278,7 +278,7 @@ function SignUp({ role, setRole }) {
     // With backend auth the server is the judge of duplicates (409 from signup).
     if (!api.uses("auth") && db.users.some((u) => u.email === email)) return setError("An account with this email already exists.");
     if (role === "employer" && form.company.trim().length < 2) return setError("Enter your company name.");
-    if (strength.score < 3) return setError("Use at least 8 characters with upper and lower case letters and a number.");
+    if (!passwordMeetsRules(form.password)) return setError("Use at least 8 characters with upper and lower case letters and a number.");
     if (form.password !== form.confirm) return setError("Passwords don't match.");
     if (!form.terms) return setError("Please accept the terms to continue.");
     if (role === "candidate" && !form.dataConsent) return setError("Consent is needed to process your CV and interview answers.");

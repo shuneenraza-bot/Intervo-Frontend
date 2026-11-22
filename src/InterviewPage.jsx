@@ -585,7 +585,11 @@ const AUDIO_EXT = [["webm", "webm"], ["ogg", "ogg"], ["mp4", "m4a"], ["wav", "wa
  * continuous recording per answer; finish() stops it and resolves with { blob, ext } (the same
  * result again if asked twice, so a failed submit can be retried); reset() throws it away.
  */
+const MAX_RECORD_MS = 180_000; // the server refuses recordings over about 3 minutes
 function useRecorder(enabled) {
+  const usedMs = useRef(0); // recorded time so far (paused time doesn't count)
+  const startedAt = useRef(0);
+  const limitTimer = useRef(null);
   const recRef = useRef(null);
   const streamRef = useRef(null);
   const chunks = useRef([]);
@@ -593,6 +597,8 @@ function useRecorder(enabled) {
   const [recording, setRecording] = useState(false);
 
   const release = useCallback(() => {
+    clearTimeout(limitTimer.current);
+    usedMs.current = 0;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
     recRef.current = null;
@@ -606,7 +612,10 @@ function useRecorder(enabled) {
     try {
       final.current = null; // recording again replaces an earlier take
       if (recRef.current?.state === "paused") {
+        if (usedMs.current >= MAX_RECORD_MS) return; // at the limit: this take is complete
         recRef.current.resume();
+        startedAt.current = Date.now();
+        limitTimer.current = setTimeout(stopAtLimit, MAX_RECORD_MS - usedMs.current);
         return setRecording(true);
       }
       if (recRef.current) return;
@@ -617,14 +626,27 @@ function useRecorder(enabled) {
       rec.start();
       streamRef.current = stream;
       recRef.current = rec;
+      startedAt.current = Date.now();
+      limitTimer.current = setTimeout(stopAtLimit, MAX_RECORD_MS);
       setRecording(true);
     } catch {
       /* no microphone access: the live browser transcript is still used */
     }
   }, [enabled]);
 
-  const pause = useCallback(() => {
+  // Reaching the 3-minute limit pauses the recording; finish() then saves what was recorded.
+  const stopAtLimit = useCallback(() => {
+    usedMs.current = MAX_RECORD_MS;
     if (recRef.current?.state === "recording") recRef.current.pause();
+    setRecording(false);
+  }, []);
+
+  const pause = useCallback(() => {
+    if (recRef.current?.state === "recording") {
+      clearTimeout(limitTimer.current);
+      usedMs.current += Date.now() - startedAt.current;
+      recRef.current.pause();
+    }
     setRecording(false);
   }, []);
 

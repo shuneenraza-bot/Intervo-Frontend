@@ -269,11 +269,11 @@ export async function startSignup({ role, name, email, company, password, dataCo
 /**
  * Step 2 of sign in and sign up: `template` is the live landmark template from FaceCapture.
  * Enrols it when the account has no face, otherwise verifies it (the blink check has already
- * passed in FaceCapture). Resolves with the signed-in user. Errors: 401 face mismatch (message
+ * passed in FaceCapture, whose per-frame blink scores arrive as `liveness` and are re-checked by the server). Resolves with the signed-in user. Errors: 401 face mismatch (message
  * says how many attempts are left), or 401/429 when the user must start again with the
  * password (see needsPassword).
  */
-export async function completeFace({ template, remember = true }) {
+export async function completeFace({ template, liveness, remember = true }) {
   if (!pending || pending.expiresAt < Date.now()) {
     pending = null;
     throw new ApiError(PENDING_EXPIRED, 401);
@@ -281,7 +281,7 @@ export async function completeFace({ template, remember = true }) {
   const enrol = !pending.faceEnrolled;
   if (uses("auth")) {
     const path = enrol ? "/auth/face/enroll" : "/auth/face/verify";
-    const body = enrol ? { template } : { template, liveness: { blink: true } };
+    const body = enrol ? { template } : { template, liveness };
     const { token, user } = await request("POST", path, body, { token: pending.token });
     pending = null;
     setToken(token, remember);
@@ -875,7 +875,7 @@ export async function respondToApplication(applicationId, decision, note = "") {
       const said = text ? ` They said: "${text}"` : "";
       const link = `/candidates?job=${job.id}`;
       if (accepted) pushNotification(d, job.employerId, "accepted", `${me.name} accepted your shortlist for ${job.title}`, `Their contact details are now on the Candidates page.${said}`, link);
-      else pushNotification(d, job.employerId, "declined", `${me.name} declined your shortlist for ${job.title}`, `No contact details were shared.${said}`, link);
+      else pushNotification(d, job.employerId, "declined", `A candidate declined your shortlist for ${job.title}`, `No contact details were shared.${said}`, link);
     }
   });
   return myApplicationShape(getDb(), { ...app, status: accepted ? "accepted" : "declined_by_candidate", history: [...(app.history || [{ status: "applied", at: app.date }]), { status: accepted ? "accepted" : "declined_by_candidate", at: Date.now(), candidateNote: text }] });
@@ -968,6 +968,8 @@ export function getCandidatesSync(jobId, db = getDb()) {
     visible.push({ app: { ...app, status: appStatus(app) }, cand: { id: cand.id, name: cand.name }, cvSummary, match, contact });
   });
   visible.sort((a, b) => b.match.percentage - a.match.percentage); // stable: ties keep application order
+  // Same as the backend: the name stays hidden until the candidate accepts ("Candidate #n" in ranking order).
+  visible.forEach((v, i) => { if (!v.contact) v.cand = { ...v.cand, name: `Candidate #${i + 1}` }; });
   return { job, visible, hidden };
 }
 

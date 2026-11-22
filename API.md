@@ -76,16 +76,16 @@ Step 2 for an enrolled account. Header: `Authorization: Bearer <pendingToken>`.
 ```json
 {
   "template": { "v": 2, "method": "landmarks", "features": [1.02, 0.47, …] },
-  "liveness": { "blink": true }
+  "liveness": { "samples": [{ "t": 0, "v": 0.05 }, { "t": 150, "v": 0.06 }, { "t": 300, "v": 0.42 }, { "t": 450, "v": 0.81 }, …] }
 }
 ```
-`template` is the live landmark geometry from the browser. It is captured only after the blink liveness check passes, and `liveness.blink` must be `true`. Compare it with the stored `face.template.features` the way `compareGeometry` in `src/faceCues.js` does: `similarity = max(0, 1 − mean(|a − b|) / 0.12)`. Accept it when `similarity ≥ config.rules.faceThreshold`. Reference implementation: `completeFace` in `src/api.js`. The blink is detected in the browser; a server can't re-check a blink from a template.
+`template` is the live landmark geometry from the browser. It is captured only after the blink liveness check passes, and `liveness.samples` carries the eye-blink score (`v`, 0 open to 1 closed) of every frame the browser checked, with its time `t` in milliseconds. Compare it with the stored `face.template.features` the way `compareGeometry` in `src/faceCues.js` does: `similarity = max(0, 1 − mean(|a − b|) / 0.12)`. Accept it when `similarity ≥ config.rules.faceThreshold`. Reference implementation: `completeFace` in `src/api.js`. The blink is measured in the browser, but the server re-checks the series: at least 5 frames, strictly increasing `t`, spanning 0.15 to 6 seconds, with open eyes (`v < 0.35`) followed by closed eyes (`v > 0.55`). It cannot prove the frames came from a real camera, so this stops a bare "blinked" claim, not a determined attacker with a modified client.
 
 Response `200`: `{ "token": "<full jwt>", "user": User }`, and `user.lastLogin = { at, method: "face" }` (this means password + face).
 
 Errors:
 - `401`: `"Face didn't match this account. 2 attempts left."`; or the pending token is missing, expired or already spent (`"Too many failed face attempts. Enter your password again to continue."`). The frontend sends the user back to the password step.
-- `400`: no face enrolled, or `liveness.blink` is `false`.
+- `400`: no face enrolled, or the blink evidence does not show a blink.
 - `429`: blocked (see below).
 
 ### POST `/auth/face/enroll`
@@ -117,7 +117,7 @@ Response `201`: `{ "pendingToken": "<jwt>", "faceEnrolled": false, "expiresIn": 
 Errors: `409` email already registered · `422` invalid input.
 
 ### GET `/auth/me` · PUT `/auth/face`
-Full token only. `GET /auth/me` returns the signed-in `User` and is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and **re-enrols** (replaces) the face from Profile & Privacy. A face can't be deleted.
+Full token only. `GET /auth/me` returns the signed-in `User` (`face` is `{ enrolled, enrolledAt }`: the template is stored encrypted and never sent back) and is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and **re-enrols** (replaces) the face from Profile & Privacy. A face can't be deleted.
 
 ### GET `/config`
 The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates and the skill library; the candidate and interview code read the rules.
@@ -245,7 +245,7 @@ Response `200`:
   "candidates": [
     {
       "application": Application,
-      "candidate": { "id": "cand-1", "name": "Ayesha Khan", "email": "ayesha@intervo.demo" },
+      "candidate": { "id": "cand-1", "name": "Candidate #1" },  // the real name only after the candidate accepts; never an email here
       "cvSummary": { "topDegree": "BS Computer Science", "experienceYears": 1.5, "projectCount": 2 },
       "match": CVMatch
     }

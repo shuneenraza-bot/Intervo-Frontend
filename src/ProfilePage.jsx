@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { formatDate, initials, isLegacyTemplate } from "./lib";
+import { formatDate, hasFace, initials, isLegacyTemplate } from "./lib";
 import * as api from "./api";
 import { Card, Modal, PageHeader, Switch } from "./ui";
 import { FaceCapture } from "./Camera";
@@ -96,11 +96,11 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
 
         <div className="stack">
           <Card title="Face verification" subtitle="Required with your password every time you sign in">
-            <div className={`face-status ${user.face?.template ? "is-on" : ""}`}>
-              <span className="face-status__icon"><Icon name={user.face?.template ? "shield" : "scan"} size={22} /></span>
+            <div className={`face-status ${hasFace(user) ? "is-on" : ""}`}>
+              <span className="face-status__icon"><Icon name={hasFace(user) ? "shield" : "scan"} size={22} /></span>
               <div>
-                <strong>{user.face?.template ? "Enrolled" : "Not set up"}</strong>
-                <span>{user.face?.template ? `Face enrolled ${formatDate(user.face.enrolledAt)}` : "Your face is enrolled at your next sign-in."}</span>
+                <strong>{hasFace(user) ? "Enrolled" : "Not set up"}</strong>
+                <span>{hasFace(user) ? `Face enrolled ${formatDate(user.face.enrolledAt)}` : "Your face is enrolled at your next sign-in."}</span>
                 {isLegacyTemplate(user.face?.template) && <span>Face verification was upgraded — re-enrol your face once.</span>}
                 {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method === "face" ? "password + face verification" : user.lastLogin.method.replace(/\+/g, " + ")}</span>}
               </div>

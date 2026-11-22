@@ -12,7 +12,7 @@ export default function Overview({ user, db, sessions, profile, applications, pe
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
   const steps = [
-    { done: !!user.face?.template, title: "Enrol your face for secure login", page: "profile" },
+    { done: hasFace(user), title: "Enrol your face for secure login", page: "profile" },
     { done: !!profile.result, title: "Analyse your CV against a target role", page: "cv" },
     { done: sessions.length > 0, title: "Complete your first mock interview", page: "interview" },
     { done: sessions.length >= rules.weakMinSessions, title: `Reach ${plural(rules.weakMinSessions, "session")} to detect weaknesses`, page: "interview" },

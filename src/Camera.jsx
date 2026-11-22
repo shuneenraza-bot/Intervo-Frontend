@@ -110,6 +110,7 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
   report("Look at the camera and blink…");
   const start = performance.now();
   const frames = [];
+  const samples = []; // { t, v }: every frame's blink score, so the server can re-check the blink
   let sawOpen = false, blinked = false, sawFace = false;
   while (performance.now() - start < BLINK_WINDOW) {
     const f = cues.detectFaces(landmarker, video, nextTs());
@@ -117,6 +118,8 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
     if (f.count > 1) return { ok: false, message: MSG_MANY };
     if (f.count === 1) {
       sawFace = true;
+      const t = Math.round(performance.now() - start);
+      if (!samples.length || t > samples[samples.length - 1].t) samples.push({ t, v: +f.blink.toFixed(3) });
       if (f.blink < EYES_OPEN) {
         sawOpen = true;
         const g = f.frontal && cues.faceGeometry(f.landmarks, video.videoWidth, video.videoHeight);
@@ -132,7 +135,7 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
   if (!blinked) return { ok: false, message: "Liveness check failed — no blink detected within 4 seconds. Blink naturally and try again." };
   if (!frames.length) return { ok: false, message: MSG_TURN };
   report(null, 100);
-  return { ok: true, template: { v: cues.FACE_TEMPLATE_VERSION, method: "landmarks", features: cues.averageGeometry(frames) } };
+  return { ok: true, template: { v: cues.FACE_TEMPLATE_VERSION, method: "landmarks", features: cues.averageGeometry(frames) }, liveness: { samples } };
 }
 
 const MSG_NO_CAMERA = "A camera is required to sign in. Allow camera access, or ask an admin to reset your face.";
@@ -142,8 +145,8 @@ const MSG_NO_MODEL = "The face model couldn't load, so face verification isn't a
  * Face enrolment / verification step (required to sign in, no skip).
  *  mode="enroll": requires exactly one face, captures 3 samples and returns an
  *                 averaged landmark-geometry template via onComplete({ template, quality }).
- *  mode="verify": blink liveness within 4s, then passes the live template to the async
- *                 `verify(template)`. Its resolved value goes to onComplete; if it throws,
+ *  mode="verify": blink liveness within 4s, then passes the live template and the blink
+ *                 evidence to the async `verify(template, liveness)`. Its resolved value goes to onComplete; if it throws,
  *                 the error message is shown.
  * Every failed attempt calls onFail(error) — sign-in uses it to count attempts.
  */
@@ -177,7 +180,7 @@ export function FaceCapture({ mode = "enroll", verify, onComplete, onFail }) {
         else {
           report("Blink detected · checking your face…");
           try {
-            r = { ok: true, message: "Verified · blink detected", result: await verify(live.template) };
+            r = { ok: true, message: "Verified · blink detected", result: await verify(live.template, live.liveness) };
           } catch (err) {
             r = { ok: false, message: err.message, error: err };
           }

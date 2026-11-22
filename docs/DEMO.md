@@ -233,12 +233,11 @@ SELECT id, role, name, email, company,
 FROM users
 ORDER BY created_at DESC;
 
--- 2. Passwords are argon2 hashes; Face ID is numbers, not a photo
+-- 2. Passwords are argon2 hashes; Face ID is encrypted numbers, not a photo
 SELECT email,
        left(password_hash, 34) || '...' AS password_hash,
        face_enrolled_at,
-       CASE WHEN jsonb_typeof(face_template) = 'object'
-            THEN jsonb_array_length(face_template -> 'features') END AS face_numbers_stored
+       left(face_template ->> 'data', 24) || '...' AS face_template_ciphertext
 FROM users
 ORDER BY created_at DESC
 LIMIT 5;
