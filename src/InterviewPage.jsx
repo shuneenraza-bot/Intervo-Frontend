@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "./Icons";
 import { useStore } from "./store";
-import { average, frameToTemplate, motionBetween, plural, scoreTone, selectQuestions, wordCount } from "./lib";
+import { average, frameToTemplate, motionBetween, plural, recentQuestionIds, scoreTone, selectQuestions, wordCount } from "./lib";
 import * as api from "./api";
 import { Card, Meter, Note, PageHeader, ProviderBadge, ScoreRing, Segmented } from "./ui";
 import { useCamera } from "./Camera";
@@ -39,7 +39,7 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
   const role = roles.find((r) => r.id === roleId) || roles[0];
   const missing = useMemo(() => (gap ? [...gap.missing, ...(gap.partial || [])].map((s) => s.name) : []), [gap]);
   const plan = useMemo(
-    () => selectQuestions({ role, performance, missingSkills: missing, questions: config.questions, count }),
+    () => selectQuestions({ role, performance, missingSkills: missing, questions: config.questions, count, recentIds: recentQuestionIds(db.sessions, user.id) }),
     // planSeed lets the user reshuffle
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [role, performance, missing, config.questions, count, planSeed]

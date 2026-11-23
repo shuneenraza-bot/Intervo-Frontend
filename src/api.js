@@ -1178,7 +1178,7 @@ export async function removeSkill(skill) {
 export async function saveQuestion(q) {
   let saved;
   if (uses("admin")) {
-    const body = { skill: q.skill, type: q.type, text: q.text, keywords: q.keywords, followUp: q.followUp || "" };
+    const body = { skill: q.skill, type: q.type, text: q.text, keywords: q.keywords, followUp: q.followUp || "", difficulty: q.difficulty || "medium" };
     saved = q.id ? await request("PUT", `${ADMIN}/questions/${byId(q.id)}`, body) : await request("POST", `${ADMIN}/questions`, body);
   } else saved = q.id ? q : { ...q, id: uid("q") };
   write((d) => upsert(d.config.questions, saved));
