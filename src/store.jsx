@@ -34,6 +34,15 @@ function loadDB() {
   const db = readJSON(DB_KEY, validDB);
   if (db?.version === DB_VERSION) return db;
   try {
+    // v4 → v5: new domains, roles, skills and questions. Keep the user's data; keep old skills that jobs still use.
+    if (db?.version === 4) {
+      const fresh = seedDB().config;
+      const usedByJobs = new Set(db.jobs.flatMap((j) => (j.skills || []).map((s) => s.name)));
+      const kept = db.config.skills.filter((s) => usedByJobs.has(s.name) && !fresh.skills.some((f) => f.name === s.name));
+      db.config = { ...db.config, domains: fresh.domains, roles: fresh.roles, skills: [...fresh.skills, ...kept], questions: fresh.questions };
+      db.version = DB_VERSION;
+      return db;
+    }
     // v3 → v4: keep the user's data, only fix the Recruitment aliases ("hiring" caused false matches in job descriptions).
     if (db?.version === 3) {
       const rec = db.config.skills.find((s) => s.name === "Recruitment");

@@ -35,7 +35,8 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState("");
 
-  const role = config.roles.find((r) => r.id === roleId) || config.roles[0];
+  const roles = config.roles.filter((r) => r.active !== false);
+  const role = roles.find((r) => r.id === roleId) || roles[0];
   const missing = useMemo(() => (gap ? [...gap.missing, ...(gap.partial || [])].map((s) => s.name) : []), [gap]);
   const plan = useMemo(
     () => selectQuestions({ role, performance, missingSkills: missing, questions: config.questions, count }),
@@ -104,7 +105,13 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
             <div className="form">
               <div className="field">
                 <label>Target role</label>
-                <Segmented wrap options={config.roles.map((r) => ({ value: r.id, label: r.title, sub: config.domains.find((d) => d.id === r.domainId)?.name }))} value={roleId} onChange={setRoleId} />
+                <Segmented wrap options={roles.map((r) => ({ value: r.id, label: r.title, sub: config.domains.find((d) => d.id === r.domainId)?.name }))} value={roleId} onChange={setRoleId} />
+                {role?.responsibilities?.length > 0 && (
+                  <div className="role-duties">
+                    <strong>What this role does</strong>
+                    <ul>{role.responsibilities.map((line) => <li key={line}>{line}</li>)}</ul>
+                  </div>
+                )}
               </div>
               <div className="field">
                 <label>Interview mode</label>

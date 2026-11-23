@@ -315,7 +315,7 @@ Changes apply immediately: the interview engine, CV matching, evaluation and the
 |---|---|---|---|
 | GET · POST | `/admin/domains` | `{ name }` | `409` duplicate name |
 | PUT · DELETE | `/admin/domains/{id}` | `{ name }` | delete: `409` while a role uses it |
-| GET · POST | `/admin/roles` | `{ title, domainId, skills: [{ name, weight 1-3 }] }` | at least one skill; `422` unknown skill or domain |
+| GET · POST | `/admin/roles` | `{ title, domainId, skills: [{ name, weight 1-3 }], responsibilities: [string], active }` | at least one skill; `responsibilities` are short lines (max 12, 160 characters each); `active` omitted keeps the current value (new roles start active); `422` unknown skill or domain. Inactive roles are left out of `GET /config` and can't be used for new jobs or practice. |
 | PUT · DELETE | `/admin/roles/{id}` | same | delete: `409` while a job uses it |
 | GET · POST | `/admin/skills` | `{ name, aliases[], related[], tip }` | `related` are skill names; aliases are stored lowercase |
 | PUT · DELETE | `/admin/skills/{id}` | same | renaming updates other skills' `related`; delete: `409` while a role or job uses it, removes its question templates |

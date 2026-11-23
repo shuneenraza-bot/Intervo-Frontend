@@ -1340,6 +1340,9 @@ textarea::placeholder { color: var(--placeholder); }
 .admin-list span:not(.admin-list__icon) { color: var(--subtle); font-size: 12px; }
 .admin-list__icon { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; color: var(--brand); background: var(--brand-50); }
 .inline-add { display: flex; gap: 8px; margin-top: 14px; }
+.role-duties { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--line-2); border-radius: 10px; background: var(--line-2); font-size: 13px; }
+.role-duties strong { display: block; margin-bottom: 4px; font-size: 12px; color: var(--muted); }
+.role-duties ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
 .role-table { display: grid; }
 .role-table__row { display: grid; grid-template-columns: minmax(170px, .8fr) minmax(0, 2fr) auto; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line-2); }
 .role-table__row:last-child { border-bottom: 0; }

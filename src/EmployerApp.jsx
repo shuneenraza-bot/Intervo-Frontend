@@ -149,7 +149,7 @@ function JobPostings({ myJobs, openCandidates }) {
   return (
     <>
       <PageHeader kicker="Recruitment" title="Job postings" subtitle="Define required skills with weights and the minimum CV skill match used to rank candidates."
-        actions={<button className="btn btn--primary" onClick={() => setEditing({ ...EMPTY_JOB, roleId: config.roles[0].id, skills: config.roles[0].skills })}><Icon name="plus" size={16} /> New job</button>} />
+        actions={<button className="btn btn--primary" onClick={() => setEditing(newJob(config))}><Icon name="plus" size={16} /> New job</button>} />
       {myJobs.length ? (
         <div className="jobs">
           {myJobs.map((job, i) => {
@@ -182,11 +182,22 @@ function JobPostings({ myJobs, openCandidates }) {
           })}
         </div>
       ) : (
-        <Card><Empty icon="briefcase" title="No postings yet" text="Create your first job posting." action="New job" onAction={() => setEditing({ ...EMPTY_JOB, roleId: config.roles[0].id, skills: config.roles[0].skills })} /></Card>
+        <Card><Empty icon="briefcase" title="No postings yet" text="Create your first job posting." action="New job" onAction={() => setEditing(newJob(config))} /></Card>
       )}
       {editing && <JobEditor job={editing} onClose={() => setEditing(null)} onSave={save} />}
     </>
   );
+}
+
+/** The job description a role template starts from: its responsibilities as a short list. */
+function describeRole(role) {
+  return role?.responsibilities?.length ? `In this role you will:\n${role.responsibilities.map((line) => `- ${line}`).join("\n")}` : "";
+}
+
+/** A blank job that starts from the first active role. */
+function newJob(config) {
+  const role = config.roles.find((r) => r.active !== false) || config.roles[0];
+  return { ...EMPTY_JOB, roleId: role.id, skills: structuredClone(role.skills), description: describeRole(role) };
 }
 
 function JobEditor({ job, onClose, onSave }) {
@@ -200,7 +211,16 @@ function JobEditor({ job, onClose, onSave }) {
 
   function applyTemplate(roleId) {
     const role = config.roles.find((r) => r.id === roleId);
-    setForm((f) => ({ ...f, roleId, skills: role ? structuredClone(role.skills) : f.skills, title: f.title || (role ? `Junior ${role.title}` : "") }));
+    setForm((f) => {
+      // The description is pre-filled from the role's responsibilities, but only while it is empty
+      // or still the text a role template wrote: the employer's own words are never overwritten.
+      const previous = config.roles.find((r) => r.id === f.roleId);
+      const untouched = !f.description.trim() || f.description === describeRole(previous);
+      return {
+        ...f, roleId, skills: role ? structuredClone(role.skills) : f.skills, title: f.title || (role ? `Junior ${role.title}` : ""),
+        description: role && untouched ? describeRole(role) : f.description,
+      };
+    });
   }
 
   function submit() {
@@ -222,7 +242,7 @@ function JobEditor({ job, onClose, onSave }) {
           <div className="field">
             <label htmlFor="jr">Role template</label>
             <select id="jr" className="select" value={form.roleId} onChange={(e) => applyTemplate(e.target.value)}>
-              {config.roles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+              {config.roles.filter((r) => r.active !== false || r.id === form.roleId).map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
             </select>
           </div>
           <div className="field">

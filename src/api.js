@@ -1118,11 +1118,11 @@ export async function removeDomain(id) {
 
 /* ---- job roles ---- */
 
-/** Creates (no id) or updates (with id) a role: { id?, title, domainId, skills: [{ name, weight }] }. */
+/** Creates (no id) or updates (with id) a role: { id?, title, domainId, skills: [{ name, weight }], responsibilities: [string], active }. */
 export async function saveRole(role) {
   let saved;
   if (uses("admin")) {
-    const body = { title: role.title, domainId: role.domainId, skills: role.skills };
+    const body = { title: role.title, domainId: role.domainId, skills: role.skills, responsibilities: role.responsibilities || [], active: role.active !== false };
     saved = role.id ? await request("PUT", `${ADMIN}/roles/${byId(role.id)}`, body) : await request("POST", `${ADMIN}/roles`, body);
   } else saved = role.id ? role : { ...role, id: uid("role") };
   write((d) => upsert(d.config.roles, saved));

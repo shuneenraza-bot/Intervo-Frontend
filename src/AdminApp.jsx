@@ -100,7 +100,7 @@ function DomainsRoles() {
   return (
     <>
       <PageHeader kicker="Configuration" title="Domains & roles"
-        actions={<button className="btn btn--primary" onClick={() => setEditing({ title: "", domainId: domains[0]?.id, skills: [] })}><Icon name="plus" size={16} /> New role</button>} />
+        actions={<button className="btn btn--primary" onClick={() => setEditing({ title: "", domainId: domains[0]?.id, skills: [], responsibilities: [], active: true })}><Icon name="plus" size={16} /> New role</button>} />
       <div className="grid grid--admin">
         <Card title="Domains" subtitle={`${domains.length} configured`}>
           <ul className="admin-list">
@@ -124,6 +124,7 @@ function DomainsRoles() {
                 <div className="role-table__main">
                   <strong>{r.title}</strong>
                   <span className="badge badge--muted">{domains.find((d) => d.id === r.domainId)?.name || "No domain"}</span>
+                  {r.active === false && <span className="badge badge--warn">Inactive</span>}
                 </div>
                 <div className="chips">{r.skills.map((s) => <span className="chip" key={s.name}>{s.name}<Weight w={s.weight} /></span>)}</div>
                 <div className="btn-row">
@@ -142,13 +143,14 @@ function DomainsRoles() {
 
 function RoleEditor({ role, onClose, onSave }) {
   const { db } = useStore();
-  const [form, setForm] = useState(structuredClone(role));
+  const [form, setForm] = useState(() => ({ responsibilities: [], active: true, ...structuredClone(role) }));
+  const [duties, setDuties] = useState((role.responsibilities || []).join("\n"));
   const [add, setAdd] = useState("");
   const [error, setError] = useState("");
   const available = db.config.skills.filter((s) => !form.skills.some((x) => x.name === s.name));
   return (
     <Modal open wide onClose={onClose} title={role.id ? "Edit role" : "New role"}
-      footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" onClick={() => (form.title.trim() && form.skills.length ? onSave({ ...form, title: form.title.trim() }) : setError("Add a title and at least one skill."))}>Save role</button></>}>
+      footer={<><button className="btn btn--ghost" onClick={onClose}>Cancel</button><button className="btn btn--primary" onClick={() => (form.title.trim() && form.skills.length ? onSave({ ...form, title: form.title.trim(), responsibilities: duties.split("\n").map((l) => l.trim()).filter(Boolean) }) : setError("Add a title and at least one skill."))}>Save role</button></>}>
       <div className="form">
         <div className="form__grid">
           <div className="field"><label>Title</label><div className="input"><input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Data Analyst" /></div></div>
@@ -158,6 +160,11 @@ function RoleEditor({ role, onClose, onSave }) {
             </select>
           </div>
         </div>
+        <div className="field">
+          <div className="field__row"><label htmlFor="role-duties">Responsibilities</label><span className="field__hint">One short line each. Shown to candidates, pre-fills job descriptions and guides AI-written questions.</span></div>
+          <textarea id="role-duties" rows={4} data-lenis-prevent value={duties} onChange={(e) => setDuties(e.target.value)} placeholder={"Build responsive UI\nConnect REST APIs"} />
+        </div>
+        <label className="check"><input type="checkbox" checked={form.active !== false} onChange={(e) => setForm({ ...form, active: e.target.checked })} /><span className="check__box"><Icon name="check" size={12} strokeWidth={2.6} /></span>Active: candidates can practise this role and employers can post jobs for it</label>
         <div className="field">
           <div className="field__row"><label>Required skills</label><span className="field__hint">1 = nice to have · 3 = core</span></div>
           <div className="skill-editor">
