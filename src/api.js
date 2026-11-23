@@ -25,6 +25,7 @@
 import { cvFit, evaluateAnswer as evaluateLocal, hashPassword, isLandmarkTemplate, uid } from "./lib";
 import { educationLevel, extractText, parseCV, parseJD as parseJDLocal } from "./cvParser";
 import { readCVFile, removeCVFile, saveCVFile } from "./cvFiles";
+import { isPlainObject, readJSON, readRaw } from "./storage";
 
 const MODULES = new Set(
   (import.meta.env.VITE_BACKEND_MODULES || "").split(",").map((m) => m.trim().toLowerCase()).filter(Boolean)
@@ -66,11 +67,8 @@ const write = (fn) => store.update(fn);
 
 /* ---------- JWT token ---------- */
 function getToken() {
-  try {
-    return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || "";
-  } catch {
-    return "";
-  }
+  const t = readRaw(TOKEN_KEY) || readRaw(TOKEN_KEY, "session") || "";
+  return typeof t === "string" ? t : "";
 }
 function setToken(token, remember) {
   try {
@@ -185,15 +183,12 @@ const PENDING_EXPIRED = "Your sign-in timed out. Enter your password again.";
 /** Local-mode counterpart of the server's attempt limits: password 5 → 60 s, face 3 → 5 min. */
 const LOCAL_GUARD_KEY = "intervo.localGuard";
 function localGuard(userId) {
-  try {
-    return (JSON.parse(localStorage.getItem(LOCAL_GUARD_KEY)) || {})[userId] || { pw: 0, face: 0, until: 0 };
-  } catch {
-    return { pw: 0, face: 0, until: 0 };
-  }
+  const g = readJSON(LOCAL_GUARD_KEY, isPlainObject, {})[userId];
+  return isPlainObject(g) ? { pw: 0, face: 0, until: 0, ...g } : { pw: 0, face: 0, until: 0 };
 }
 function setLocalGuard(userId, g) {
   try {
-    const all = JSON.parse(localStorage.getItem(LOCAL_GUARD_KEY)) || {};
+    const all = readJSON(LOCAL_GUARD_KEY, isPlainObject, {});
     all[userId] = g;
     localStorage.setItem(LOCAL_GUARD_KEY, JSON.stringify(all));
   } catch {

@@ -7,6 +7,7 @@ import * as api from "./api";
 import { navigate } from "./router";
 import { Brand, Meter, ThemeToggle } from "./ui";
 import { FaceCapture } from "./Camera";
+import { isPlainObject, readJSON } from "./storage";
 
 const ROLE_COPY = {
   candidate: { label: "Candidate", icon: "user", text: "Practise interviews, close skill gaps and track progress." },
@@ -53,11 +54,7 @@ const LOCK_SECONDS = 60;
 const PASSWORD_KEY = "intervo.passwordGuard"; // localStorage: email → { fails }
 
 function readMap(key) {
-  try {
-    return JSON.parse(window.localStorage.getItem(key)) || {};
-  } catch {
-    return {};
-  }
+  return readJSON(key, isPlainObject, {});
 }
 
 function writeEntry(key, email, value) {

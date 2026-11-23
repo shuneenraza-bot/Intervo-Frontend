@@ -3,6 +3,7 @@ import { DB_VERSION, seedDB } from "./data";
 import { clearToken, connectStore, restoreSession } from "./api";
 import { navigate } from "./router";
 import { hasFace } from "./lib";
+import { isPlainObject, readJSON, readRaw } from "./storage";
 
 /*
  * App-wide store backed by localStorage. It plays the role of the PostgreSQL
@@ -15,10 +16,24 @@ const AUTH_KEY = "intervo.auth";
 
 const StoreContext = createContext(null);
 
+/** True when `db` has every collection the pages read without checking. */
+function validDB(db) {
+  return (
+    isPlainObject(db) &&
+    ["users", "sessions", "jobs", "applications"].every((k) => Array.isArray(db[k])) &&
+    isPlainObject(db.profiles) &&
+    isPlainObject(db.config) &&
+    ["domains", "skills", "roles", "questions", "criteria"].every((k) => Array.isArray(db.config[k])) &&
+    isPlainObject(db.config.rules) &&
+    db.users.every(isPlainObject)
+  );
+}
+
 function loadDB() {
+  // Corrupt, wrongly shaped or old data: that one key is deleted and a fresh seed is used.
+  const db = readJSON(DB_KEY, validDB);
+  if (db?.version === DB_VERSION) return db;
   try {
-    const db = JSON.parse(localStorage.getItem(DB_KEY));
-    if (db?.version === DB_VERSION) return db;
     // v3 → v4: keep the user's data, only fix the Recruitment aliases ("hiring" caused false matches in job descriptions).
     if (db?.version === 3) {
       const rec = db.config.skills.find((s) => s.name === "Recruitment");
@@ -29,15 +44,13 @@ function loadDB() {
   } catch {
     /* fall through to a fresh seed */
   }
+  try { localStorage.removeItem(DB_KEY); } catch { /* blocked */ }
   return seedDB();
 }
 
 function loadAuth() {
-  try {
-    return localStorage.getItem(AUTH_KEY) || sessionStorage.getItem(AUTH_KEY) || "";
-  } catch {
-    return "";
-  }
+  const id = readRaw(AUTH_KEY) || readRaw(AUTH_KEY, "session") || "";
+  return typeof id === "string" ? id : "";
 }
 
 export function StoreProvider({ children }) {
@@ -99,7 +112,7 @@ export function StoreProvider({ children }) {
 
   // A signed-in account must have a face enrolled: if it was reset, the session ends (the backend does the same with a 401).
   const found = db.users.find((u) => u.id === authId) || null;
-  const user = found && hasFace(found) ? found : null;
+  const user = found && ["candidate", "employer", "admin"].includes(found.role) && hasFace(found) ? found : null;
 
   // Give the API layer access to the store: local modules read/write it, backend modules cache into it.
   connectStore({ db, update, user, logout, notify });
@@ -108,7 +121,10 @@ export function StoreProvider({ children }) {
   useEffect(() => {
     if (!authId) return;
     restoreSession().catch((e) => {
-      if (e.status !== 401) notify(e.message, "bad"); // a 401 has already signed the user out
+      if (e?.status === 401) return; // already signed out
+      // Backend down, offline or failing: never leave a cached session on screen — show the login page.
+      logout();
+      notify(e?.message || "Can't reach the server. Please sign in again.", "bad");
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
