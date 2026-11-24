@@ -187,7 +187,7 @@ export function recentQuestionIds(sessions, userId, n = 3) {
     .filter((s) => s.userId === userId)
     .sort((a, b) => b.date - a.date)
     .slice(0, n)
-    .flatMap((s) => s.answers.map((a) => a.questionId))
+    .flatMap((s) => (s.answers || []).map((a) => a.questionId))
     .filter(Boolean);
 }
 
