@@ -285,7 +285,7 @@ function Questions() {
   return (
     <>
       <PageHeader kicker="Configuration" title="Question templates" subtitle="Each template targets one skill. Key points feed technical accuracy; the follow-up is asked when an answer is incomplete."
-        actions={<button className="btn btn--primary" onClick={() => setEditing({ skill: db.config.skills[0].name, type: "technical", text: "", keywords: [], followUp: "" })}><Icon name="plus" size={16} /> New template</button>} />
+        actions={<button className="btn btn--primary" onClick={() => setEditing({ skill: db.config.skills[0].name, type: "technical", text: "", keywords: [], followUp: "", difficulty: "medium" })}><Icon name="plus" size={16} /> New template</button>} />
       <div className="toolbar">
         <select className="select select--lg" value={skill} onChange={(e) => setSkill(e.target.value)} aria-label="Filter by skill">
           <option>All</option>
@@ -297,7 +297,7 @@ function Questions() {
         {list.map((q) => (
           <article className="q-card" key={q.id}>
             <div className="q-card__head">
-              <div className="chips"><span className="chip chip--brand">{q.skill}</span><span className="chip">{q.type === "behavioral" ? "Behavioural" : "Technical"}</span></div>
+              <div className="chips"><span className="chip chip--brand">{q.skill}</span><span className="chip">{q.type === "behavioral" ? "Behavioural" : "Technical"}</span><span className="chip">{q.difficulty === "easy" ? "Easy" : q.difficulty === "hard" ? "Hard" : "Medium"}</span></div>
               <div className="btn-row">
                 <button className="icon-btn icon-btn--sm" onClick={() => setEditing(q)} aria-label="Edit"><Icon name="edit" size={15} /></button>
                 <button className="icon-btn icon-btn--sm" onClick={() => api.removeQuestion(q.id).catch((e) => notify(e.message, "bad"))} aria-label="Delete"><Icon name="trash" size={15} /></button>
@@ -332,6 +332,9 @@ function QuestionEditor({ q, onClose, onSave }) {
           </div>
           <div className="field"><label>Type</label>
             <Segmented options={[{ value: "technical", label: "Technical" }, { value: "behavioral", label: "Behavioural" }]} value={form.type} onChange={(v) => setForm((f) => ({ ...f, type: v }))} />
+          </div>
+          <div className="field"><label>Difficulty</label>
+            <Segmented options={[{ value: "easy", label: "Easy" }, { value: "medium", label: "Medium" }, { value: "hard", label: "Hard" }]} value={form.difficulty || "medium"} onChange={(v) => setForm((f) => ({ ...f, difficulty: v }))} />
           </div>
         </div>
         <div className="field"><label>Question</label><textarea rows={2} data-lenis-prevent value={form.text} onChange={set("text")} /></div>

@@ -182,18 +182,33 @@ export function skillPerformance(sessions, rules) {
     .sort((a, b) => a.avg - b.avg);
 }
 
+export function recentQuestionIds(sessions, userId, n = 3) {
+  return [...sessions]
+    .filter((s) => s.userId === userId)
+    .sort((a, b) => b.date - a.date)
+    .slice(0, n)
+    .flatMap((s) => s.answers.map((a) => a.questionId))
+    .filter(Boolean);
+}
+
 /**
  * Chooses questions for a role: persistent weaknesses first, then CV gaps,
  * then the role's highest-weighted skills, and always one general/behavioural question.
+ * `recentIds`: ids of the templates answered in the candidate's last 3 sessions (see `recentQuestionIds`).
  */
-export function selectQuestions({ role, performance, missingSkills = [], questions, count }) {
+export function selectQuestions({ role, performance, missingSkills = [], questions, count, recentIds = [] }) {
   const roleSkills = role.skills.slice().sort((a, b) => b.weight - a.weight).map((s) => s.name);
   const weak = performance.filter((p) => p.weak).map((p) => p.skill);
   const shuffle = (arr) => arr.map((v) => [Math.random(), v]).sort((a, b) => a[0] - b[0]).map((x) => x[1]);
 
   const reason = (q) => (weak.includes(q.skill) ? "weakness" : missingSkills.includes(q.skill) ? "gap" : roleSkills.includes(q.skill) ? "role" : "general");
   const rank = { weakness: 0, gap: 1, role: 2, general: 3 };
-  const pool = questions.filter((q) => roleSkills.includes(q.skill) || weak.includes(q.skill) || q.type === "behavioral");
+  // A template answered in the candidate's last 3 sessions is skipped while another one exists for that skill.
+  const recent = new Set(recentIds);
+  const hasFresh = new Set(questions.filter((q) => !recent.has(q.id)).map((q) => q.skill));
+  const pool = questions
+    .filter((q) => roleSkills.includes(q.skill) || weak.includes(q.skill) || q.type === "behavioral")
+    .filter((q) => !recent.has(q.id) || !hasFresh.has(q.skill));
 
   const ordered = shuffle(pool).sort((a, b) => rank[reason(a)] - rank[reason(b)] || roleSkills.indexOf(a.skill) - roleSkills.indexOf(b.skill));
   const picked = [];

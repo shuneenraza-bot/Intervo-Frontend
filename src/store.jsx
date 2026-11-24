@@ -34,6 +34,17 @@ function loadDB() {
   const db = readJSON(DB_KEY, validDB);
   if (db?.version === DB_VERSION) return db;
   try {
+    // v5 → v6: the question bank. Keep every existing template (admin edits, ones past interviews used) and add
+    // the new ones, matched by skill + question text so nothing is added twice.
+    if (db?.version === 5) {
+      const key = (q) => `${q.skill}|${q.text.trim().toLowerCase()}`;
+      const have = new Set(db.config.questions.map(key));
+      const taken = new Set(db.config.questions.map((q) => q.id));
+      const added = seedDB().config.questions.filter((q) => !have.has(key(q))).map((q) => (taken.has(q.id) ? { ...q, id: `${q.id}-n` } : q));
+      db.config = { ...db.config, questions: [...db.config.questions, ...added] };
+      db.version = DB_VERSION;
+      return db;
+    }
     // v4 → v5: new domains, roles, skills and questions. Keep the user's data; keep old skills that jobs still use.
     if (db?.version === 4) {
       const fresh = seedDB().config;
