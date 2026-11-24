@@ -59,7 +59,8 @@ let lastTs = 0;
 const nextTs = () => (lastTs = Math.max(performance.now(), lastTs + 1));
 
 const ENROL_CAPTURES = 3;
-const CAPTURE_WINDOW = 2000; // ms to find a usable frame for each enrolment capture
+const BEST_OF = 4; // usable frames examined per capture; the best one is kept
+const CAPTURE_WINDOW = 3000; // ms to find a usable frame for each enrolment capture
 const BLINK_WINDOW = 4000; // ms to blink during verification
 const EYES_OPEN = 0.35; // eyeBlink blendshape below this = open
 const EYES_CLOSED = 0.55; // above this = closed
@@ -72,17 +73,21 @@ const MSG_TURN = "Look straight at the camera and keep your head level.";
 async function grabFace({ cues, landmarker }, video) {
   const end = performance.now() + CAPTURE_WINDOW;
   let reason = MSG_NO_FACE;
-  while (performance.now() < end) {
-    const f = cues.detectFaces(landmarker, video, nextTs());
+  let best = null; // lowest-blink usable frame so far
+  let good = 0;
+  while (performance.now() < end && good < BEST_OF) {
+    const f = cues.detectFacesRobust(landmarker, video, nextTs);
     if (f.count > 1) return { message: MSG_MANY };
     if (f.count === 1) {
       const features = f.frontal && f.blink < EYES_OPEN ? cues.faceGeometry(f.landmarks, video.videoWidth, video.videoHeight) : null;
-      if (features) return { features };
-      reason = f.frontal ? "Keep your eyes open while we capture." : MSG_TURN;
+      if (features) {
+        good++;
+        if (!best || f.blink < best.blink) best = { features, blink: f.blink };
+      } else reason = f.frontal ? "Keep your eyes open while we capture." : MSG_TURN;
     }
     await wait(60);
   }
-  return { message: reason };
+  return best ? { features: best.features } : { message: reason };
 }
 
 async function landmarkEnroll(engine, video, report) {
@@ -113,7 +118,7 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
   const samples = []; // { t, v }: every frame's blink score, so the server can re-check the blink
   let sawOpen = false, blinked = false, sawFace = false;
   while (performance.now() - start < BLINK_WINDOW) {
-    const f = cues.detectFaces(landmarker, video, nextTs());
+    const f = cues.detectFacesRobust(landmarker, video, nextTs);
     report(null, Math.min(100, Math.round(((performance.now() - start) / BLINK_WINDOW) * 100)));
     if (f.count > 1) return { ok: false, message: MSG_MANY };
     if (f.count === 1) {
@@ -139,7 +144,7 @@ async function landmarkLiveness({ cues, landmarker }, video, report) {
 }
 
 const MSG_NO_CAMERA = "A camera is required to sign in. Allow camera access, or ask an admin to reset your face.";
-const MSG_NO_MODEL = "The face model couldn't load, so face verification isn't available right now. Check your connection and try again.";
+const MSG_NO_MODEL = "Face check couldn't start — check your internet and reload.";
 
 /**
  * Face enrolment / verification step (required to sign in, no skip).
@@ -155,6 +160,21 @@ export function FaceCapture({ mode = "enroll", verify, onComplete, onFail }) {
   const [phase, setPhase] = useState("idle"); // idle | capturing | success | fail
   const [progress, setProgress] = useState(0);
   const [message, setMessage] = useState("");
+
+  const [hint, setHint] = useState(null);
+
+  // Live lighting hint before and between attempts.
+  useEffect(() => {
+    if (status !== "ready" || phase === "capturing" || phase === "success") return;
+    let off = false;
+    const id = setInterval(async () => {
+      const v = videoRef.current;
+      if (!v || v.readyState < 2) return;
+      const { lightingHint } = await import("./faceCues");
+      if (!off) setHint(lightingHint(v));
+    }, 700);
+    return () => { off = true; clearInterval(id); };
+  }, [status, phase, videoRef]);
 
   // Start downloading the model as soon as the step opens.
   useEffect(() => { loadFaceEngine().catch(() => {}); }, []);
@@ -229,6 +249,8 @@ export function FaceCapture({ mode = "enroll", verify, onComplete, onFail }) {
       <p className={`facecap__msg ${phase === "fail" ? "is-bad" : phase === "success" ? "is-good" : ""}`}>
         {message || (mode === "enroll" ? "Centre your face in the oval with even lighting." : "Centre your face in the oval, then blink when asked.")}
       </p>
+
+      {hint && phase !== "capturing" && phase !== "success" && <p className="facecap__msg is-bad" role="status">{hint}</p>}
 
       <div className="facecap__actions">
         <button type="button" className="btn btn--primary btn--block" disabled={!camOk || phase === "capturing" || phase === "success"} onClick={() => { setProgress(0); capture(); }}>

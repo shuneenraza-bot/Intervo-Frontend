@@ -9,9 +9,20 @@ import { FaceLandmarker } from "@mediapipe/tasks-vision";
 import wasmLoaderPath from "@mediapipe/tasks-vision/vision_wasm_internal.js?url";
 import wasmBinaryPath from "@mediapipe/tasks-vision/vision_wasm_internal.wasm?url";
 
-const MODEL_URL =
+// Model and wasm are hosted in public/mediapipe/ so they work offline and on slow
+// connections. Google's CDN (or VITE_FACE_MODEL_URL) is only a fallback.
+const BASE = import.meta.env.BASE_URL || "/";
+const LOCAL_MODEL_URL = `${BASE}mediapipe/face_landmarker.task`;
+const REMOTE_MODEL_URL =
   import.meta.env.VITE_FACE_MODEL_URL ||
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+const LOCAL_FILESET = {
+  wasmLoaderPath: `${BASE}mediapipe/vision_wasm_internal.js`,
+  wasmBinaryPath: `${BASE}mediapipe/vision_wasm_internal.wasm`,
+};
+const BUNDLED_FILESET = { wasmLoaderPath, wasmBinaryPath };
+// Lowered from the 0.5 default so backlit, low-angle or hijab-framed faces still register.
+const MIN_CONFIDENCE = 0.35;
 
 const MAX_YAW = 20; // degrees
 const MAX_PITCH = 20;
@@ -21,19 +32,32 @@ const MIN_FACE_FRAMES = 5;
 /** Creates a Face Landmarker in VIDEO mode, preferring GPU and falling back to CPU.
  *  Face login asks for 2 faces so it can reject frames with more than one person. */
 export async function createFaceLandmarker({ numFaces = 1 } = {}) {
-  const fileset = { wasmLoaderPath, wasmBinaryPath };
-  const options = (delegate) => ({
-    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+  const options = (modelAssetPath, delegate) => ({
+    baseOptions: { modelAssetPath, delegate },
     runningMode: "VIDEO",
     numFaces,
+    minFaceDetectionConfidence: MIN_CONFIDENCE,
+    minFacePresenceConfidence: MIN_CONFIDENCE,
+    minTrackingConfidence: MIN_CONFIDENCE,
     outputFaceBlendshapes: true,
     outputFacialTransformationMatrixes: true,
   });
-  try {
-    return await FaceLandmarker.createFromOptions(fileset, options("GPU"));
-  } catch {
-    return await FaceLandmarker.createFromOptions(fileset, options("CPU"));
+  // Local files first, then bundled wasm + CDN model.
+  const attempts = [
+    [LOCAL_FILESET, LOCAL_MODEL_URL],
+    [BUNDLED_FILESET, REMOTE_MODEL_URL],
+  ];
+  let lastErr;
+  for (const [fileset, model] of attempts) {
+    for (const delegate of ["GPU", "CPU"]) {
+      try {
+        return await FaceLandmarker.createFromOptions(fileset, options(model, delegate));
+      } catch (err) {
+        lastErr = err;
+      }
+    }
   }
+  throw lastErr;
 }
 
 /** Runs the landmarker on one video frame and reduces it to a small sample. */
@@ -98,6 +122,70 @@ export function detectFaces(landmarker, video, timestamp) {
     frontal: yaw == null || (Math.abs(yaw) <= MAX_LOGIN_ANGLE && Math.abs(pitch) <= MAX_LOGIN_ANGLE),
     blink: ((b.eyeBlinkLeft || 0) + (b.eyeBlinkRight || 0)) / 2,
   };
+}
+
+/** Like detectFaces, but if nothing is found retries on a brightened copy of the frame
+ *  (backlit or dim rooms). Landmarks are normalised, so they map straight back to the video. */
+export function detectFacesRobust(landmarker, video, nextTs) {
+  const f = detectFaces(landmarker, video, nextTs());
+  if (f.count !== 0) return f;
+  const c = enhancedFrame(video);
+  return c ? detectFaces(landmarker, c, nextTs()) : f;
+}
+
+let scratch = null;
+function enhancedFrame(video) {
+  const w = video.videoWidth, h = video.videoHeight;
+  if (!w || !h) return null;
+  scratch = scratch || document.createElement("canvas");
+  if (scratch.width !== w) scratch.width = w;
+  if (scratch.height !== h) scratch.height = h;
+  const ctx = scratch.getContext("2d", { willReadFrequently: true });
+  const m = measureLight(video);
+  const face = m?.face;
+  // Dark face -> stronger lift; otherwise just add contrast.
+  const gain = face != null && face < 110 ? Math.min(2.4, 130 / Math.max(face, 30)) : 1.15;
+  ctx.filter = `brightness(${gain.toFixed(2)}) contrast(1.15)`;
+  ctx.drawImage(video, 0, 0, w, h);
+  ctx.filter = "none";
+  return scratch;
+}
+
+let probe = null;
+/** Mean brightness (0-255) of the oval face area and of the side background. */
+export function measureLight(video) {
+  if (!video.videoWidth || !video.videoHeight) return null;
+  const W = 64, H = 48;
+  probe = probe || document.createElement("canvas");
+  probe.width = W;
+  probe.height = H;
+  const ctx = probe.getContext("2d", { willReadFrequently: true });
+  try {
+    ctx.drawImage(video, 0, 0, W, H);
+    const d = ctx.getImageData(0, 0, W, H).data;
+    let fs = 0, fn = 0, bs = 0, bn = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const l = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+        const nx = (x + 0.5) / W - 0.5, ny = (y + 0.5) / H - 0.5;
+        if ((nx / 0.2) ** 2 + (ny / 0.32) ** 2 <= 1) { fs += l; fn++; }
+        else if (Math.abs(nx) > 0.3) { bs += l; bn++; }
+      }
+    }
+    return { face: fn ? fs / fn : null, background: bn ? bs / bn : null };
+  } catch {
+    return null;
+  }
+}
+
+/** Lighting hint for the user, or null if fine. */
+export function lightingHint(video) {
+  const m = measureLight(video);
+  if (!m || m.face == null) return null;
+  if (m.background != null && m.background - m.face > 45 && m.background > 120) return "Strong light behind you — turn around.";
+  if (m.face < 55) return "Too dark — face a light or window.";
+  return null;
 }
 
 /** Normalised geometry vector for one face, or null if key points are missing. */
