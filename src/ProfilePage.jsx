@@ -100,7 +100,7 @@ export default function ProfilePage({ user, db, profile, sessions, applications 
               <span className="face-status__icon"><Icon name={hasFace(user) ? "shield" : "scan"} size={22} /></span>
               <div>
                 <strong>{hasFace(user) ? "Enrolled" : "Not set up"}</strong>
-                <span>{hasFace(user) ? `Face enrolled ${formatDate(user.face.enrolledAt)}` : "Your face is enrolled at your next sign-in."}</span>
+                <span>{hasFace(user) ? (user.face?.enrolledAt ? `Face enrolled ${formatDate(user.face.enrolledAt)}` : "Face enrolled") : "Your face is enrolled at your next sign-in."}</span>
                 {isLegacyTemplate(user.face?.template) && <span>Face verification was upgraded — re-enrol your face once.</span>}
                 {user.lastLogin && <span>Last sign-in: {formatDate(user.lastLogin.at)} via {user.lastLogin.method === "face" ? "password + face verification" : user.lastLogin.method.replace(/\+/g, " + ")}</span>}
               </div>

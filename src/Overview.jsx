@@ -1,5 +1,5 @@
 import { Icon } from "./Icons";
-import { average, firstName, formatDate, plural, scoreTone } from "./lib";
+import { average, firstName, formatDate, hasFace, plural, scoreTone } from "./lib";
 import { Card, Empty, LineChart, Meter, PageHeader, ScoreRing, Stat } from "./ui";
 
 export default function Overview({ user, db, sessions, profile, applications, performance, gap, go }) {
