@@ -203,10 +203,11 @@ export function selectQuestions({ role, performance, missingSkills = [], questio
 
   const reason = (q) => (weak.includes(q.skill) ? "weakness" : missingSkills.includes(q.skill) ? "gap" : roleSkills.includes(q.skill) ? "role" : "general");
   const rank = { weakness: 0, gap: 1, role: 2, general: 3 };
+  const bank = questions.filter((q) => q.status !== "generated"); // generated ones wait for an admin's approval
   // A template answered in the candidate's last 3 sessions is skipped while another one exists for that skill.
   const recent = new Set(recentIds);
-  const hasFresh = new Set(questions.filter((q) => !recent.has(q.id)).map((q) => q.skill));
-  const pool = questions
+  const hasFresh = new Set(bank.filter((q) => !recent.has(q.id)).map((q) => q.skill));
+  const pool = bank
     .filter((q) => roleSkills.includes(q.skill) || weak.includes(q.skill) || q.type === "behavioral")
     .filter((q) => !recent.has(q.id) || !hasFresh.has(q.skill));
 

@@ -2,7 +2,7 @@ import { useState } from "react";
 import * as api from "./api";
 import { Icon } from "./Icons";
 import { average, formatDate, plural, scoreTone } from "./lib";
-import { Card, Empty, LineChart, Meter, PageHeader, Sparkline, Stat } from "./ui";
+import { Card, Empty, GeneratedBadge, LineChart, Meter, PageHeader, Sparkline, Stat } from "./ui";
 
 export default function ProgressPage({ db, sessions, performance, go }) {
   const { rules, skills, criteria } = db.config;
@@ -111,7 +111,7 @@ export default function ProgressPage({ db, sessions, performance, go }) {
                       {(details[s.id] || s.answers).map((a, i) => (
                         <div key={i} className="history__answer">
                           <div className="history__answer-main">
-                            <div className="chips"><span className="chip">{a.skill}</span>{a.followUp && <span className="chip chip--fair">Follow-up</span>}</div>
+                            <div className="chips"><span className="chip">{a.skill}</span>{a.followUp && <span className="chip chip--fair">Follow-up</span>}<GeneratedBadge origin={a.questionOrigin} /></div>
                             <p>{a.question}</p>
                             <div className="breakdown__criteria">
                               {criteria.filter((c) => a.criteria?.[c.key] !== undefined).map((c) => <span key={c.key}>{c.label} <b>{a.criteria[c.key]}</b></span>)}

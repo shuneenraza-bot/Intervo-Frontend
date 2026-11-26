@@ -512,7 +512,7 @@ export async function startInterview({ roleId, mode, count }) {
   const res = await request("POST", "/interviews", { roleId, mode, count }, { timeout: SLOW_TIMEOUT });
   return {
     id: res.id,
-    questions: res.questions.map((q) => ({ id: q.id, text: q.question, skill: q.skill, type: q.type, reason: q.reason, keywords: [], followUp: null })),
+    questions: res.questions.map((q) => ({ id: q.id, text: q.question, skill: q.skill, type: q.type, reason: q.reason, origin: q.questionOrigin, keywords: [], followUp: null })),
   };
 }
 
@@ -607,7 +607,7 @@ function sessionFromServer(s) {
     answerCount: answers.length,
     answers: answers.map((q) => ({
       questionId: q.templateId, question: q.question, skill: q.skill, type: q.type, score: q.score, criteria: q.criteria || {},
-      answer: q.answer, followUp: q.followUp || null, indicators: q.indicators || null, reason: q.reason, provider: q.provider,
+      answer: q.answer, followUp: q.followUp || null, indicators: q.indicators || null, reason: q.reason, provider: q.provider, questionOrigin: q.questionOrigin,
     })),
   };
 }
@@ -1181,6 +1181,15 @@ export async function saveQuestion(q) {
     const body = { skill: q.skill, type: q.type, text: q.text, keywords: q.keywords, followUp: q.followUp || "", difficulty: q.difficulty || "medium" };
     saved = q.id ? await request("PUT", `${ADMIN}/questions/${byId(q.id)}`, body) : await request("POST", `${ADMIN}/questions`, body);
   } else saved = q.id ? q : { ...q, id: uid("q") };
+  write((d) => upsert(d.config.questions, saved));
+  return saved;
+}
+
+/** Admin: a generated question joins the question bank and can be asked to any candidate. */
+export async function approveQuestion(id) {
+  const saved = uses("admin")
+    ? await request("POST", `${ADMIN}/questions/${byId(id)}/approve`)
+    : { ...getDb().config.questions.find((x) => x.id === id), status: "approved" };
   write((d) => upsert(d.config.questions, saved));
   return saved;
 }

@@ -3,7 +3,7 @@ import { Icon } from "./Icons";
 import { useStore } from "./store";
 import { average, frameToTemplate, motionBetween, plural, recentQuestionIds, scoreTone, selectQuestions, wordCount } from "./lib";
 import * as api from "./api";
-import { Card, Meter, Note, PageHeader, ProviderBadge, ScoreRing, Segmented } from "./ui";
+import { Card, GeneratedBadge, Meter, Note, PageHeader, ProviderBadge, ScoreRing, Segmented } from "./ui";
 import { useCamera } from "./Camera";
 import { useSpeech } from "./useSpeech";
 
@@ -190,7 +190,7 @@ export default function InterviewPage({ user, db, profile, performance, gap, tar
                   <span className="breakdown__num">{String(i + 1).padStart(2, "0")}</span>
                   <div className="breakdown__body">
                     <strong>{r.question}</strong>
-                    <div className="chips"><span className="chip">{r.skill}</span>{r.followUp && <span className="chip chip--fair">Follow-up answered</span>}</div>
+                    <div className="chips"><span className="chip">{r.skill}</span>{r.followUp && <span className="chip chip--fair">Follow-up answered</span>}<GeneratedBadge origin={r.questionOrigin} /></div>
                     <div className="breakdown__criteria">
                       {config.criteria.filter((c) => r.criteria[c.key] !== undefined).map((c) => <span key={c.key}>{c.label} <b>{r.criteria[c.key]}</b></span>)}
                     </div>
@@ -423,6 +423,7 @@ function LiveInterview({ role, mode, remote, interviewId, questions, config, res
               <span className="chip">{q.type === "behavioral" ? "Behavioural · use STAR" : "Technical"}</span>
               {q.reason === "weakness" && <span className="chip chip--warn"><Icon name="target" size={12} /> Targeting a weak skill</span>}
               {q.reason === "gap" && <span className="chip chip--violet"><Icon name="file" size={12} /> From your CV gap</span>}
+              <GeneratedBadge origin={q.origin} />
             </div>
             <h2>{q.text}</h2>
           </div>

@@ -120,7 +120,7 @@ Errors: `409` email already registered · `422` invalid input.
 Full token only. `GET /auth/me` returns the signed-in `User` (`face` is `{ enrolled, enrolledAt }`: the template is stored encrypted and never sent back) and is called once on page load to check a remembered sign-in. `PUT /auth/face` takes `{ "template": { "v": 2, "method": "landmarks", "features": [...] } }` and **re-enrols** (replaces) the face from Profile & Privacy. A face can't be deleted.
 
 ### GET `/config`
-The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). The employer pages use it for role templates and the skill library; the candidate and interview code read the rules.
+The admin configuration in the shape of `config` in `src/data.js` (`domains`, `skills`, `roles`, `questions`, `criteria`, `rules`). `questions` holds approved templates only. Interview questions from `POST /interviews`, and answers in session history, carry `questionOrigin`: `generated` (written by Gemini for this candidate, shown as "Generated for you") or `template`. The employer pages use it for role templates and the skill library; the candidate and interview code read the rules.
 
 ### POST `/cv/analyze`
 Extracts text from a CV and parses it into sections. **Also saves the result on the caller's profile** (`cv` and `skills`), because the employer's CV match reads it.
@@ -320,7 +320,8 @@ Changes apply immediately: the interview engine, CV matching, evaluation and the
 | GET · POST | `/admin/skills` | `{ name, aliases[], related[], tip }` | `related` are skill names; aliases are stored lowercase |
 | PUT · DELETE | `/admin/skills/{id}` | same | renaming updates other skills' `related`; delete: `409` while a role or job uses it, removes its question templates |
 | GET · POST | `/admin/questions?skill=` | `{ skill, type: "technical" \| "behavioral", text, keywords[], followUp }` | `409` if the skill already has that text |
-| PUT · DELETE | `/admin/questions/{id}` | same | |
+| PUT · DELETE | `/admin/questions/{id}` | same | editing keeps the status |
+| POST | `/admin/questions/{id}/approve` | | A `generated` question becomes `approved` and joins the bank. `404` unknown id. Question rows carry `source` (`admin` \| `generated`) and `status` (`approved` \| `generated`) |
 | GET · PUT | `/admin/criteria` | `{ criteria: [{ key, weight 1-3, enabled }] }` | `404` unknown key; at least one must stay enabled |
 | GET · PUT | `/admin/rules` | any of `weakThreshold` 30-90, `weakMinSessions` 1-5, `followUpBelow` 30-80, `defaultQuestions` 3-6, `faceThreshold` 0.3-0.9 | omitted fields keep their value; returns all five |
 | GET | `/admin/users?role=` | | `{ id, name, email, role, company, faceEnrolled, createdAt, sessions, jobs }`; never a password hash or face template |

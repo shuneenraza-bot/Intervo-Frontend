@@ -221,7 +221,7 @@ function Skills() {
               <span className="table__skill">{s.name}</span>
               <span className="table__muted">{s.aliases.join(", ")}</span>
               <span>{s.related?.length ? s.related.join(", ") : <span className="field__hint">—</span>}</span>
-              <span>{db.config.questions.filter((x) => x.skill === s.name).length}</span>
+              <span>{db.config.questions.filter((x) => x.skill === s.name && x.status !== "generated").length}</span>
               <span className="btn-row btn-row--end">
                 <button className="icon-btn icon-btn--sm" onClick={() => setEditing(s)} aria-label="Edit"><Icon name="edit" size={15} /></button>
                 <button className="icon-btn icon-btn--sm" onClick={() => remove(s)} aria-label="Delete"><Icon name="trash" size={15} /></button>
@@ -276,7 +276,9 @@ function Questions() {
   const { db, notify } = useStore();
   const [skill, setSkill] = useState("All");
   const [editing, setEditing] = useState(null);
-  const list = db.config.questions.filter((q) => skill === "All" || q.skill === skill);
+  const [show, setShow] = useState("all"); // all | pending
+  const pending = db.config.questions.filter((q) => q.status === "generated").length;
+  const list = db.config.questions.filter((q) => (skill === "All" || q.skill === skill) && (show === "all" || q.status === "generated"));
 
   function save(q) {
     return api.saveQuestion(q).then(() => { notify("Question template saved"); setEditing(null); });
@@ -291,14 +293,19 @@ function Questions() {
           <option>All</option>
           {db.config.skills.map((s) => <option key={s.name}>{s.name}</option>)}
         </select>
+        <select className="select select--lg" value={show} onChange={(e) => setShow(e.target.value)} aria-label="Filter by status">
+          <option value="all">All templates</option>
+          <option value="pending">Awaiting approval ({pending})</option>
+        </select>
         <span className="field__hint">{plural(list.length, "template")}</span>
       </div>
       <div className="q-list">
         {list.map((q) => (
           <article className="q-card" key={q.id}>
             <div className="q-card__head">
-              <div className="chips"><span className="chip chip--brand">{q.skill}</span><span className="chip">{q.type === "behavioral" ? "Behavioural" : "Technical"}</span><span className="chip">{q.difficulty === "easy" ? "Easy" : q.difficulty === "hard" ? "Hard" : "Medium"}</span></div>
+              <div className="chips"><span className="chip chip--brand">{q.skill}</span><span className="chip">{q.type === "behavioral" ? "Behavioural" : "Technical"}</span><span className="chip">{q.difficulty === "easy" ? "Easy" : q.difficulty === "hard" ? "Hard" : "Medium"}</span>{q.status === "generated" ? <span className="chip chip--warn">Generated · awaiting approval</span> : q.source === "generated" && <span className="chip">Generated</span>}</div>
               <div className="btn-row">
+                {q.status === "generated" && <button className="btn btn--primary btn--sm" onClick={() => api.approveQuestion(q.id).then(() => notify("Question approved")).catch((e) => notify(e.message, "bad"))}><Icon name="check" size={14} /> Approve</button>}
                 <button className="icon-btn icon-btn--sm" onClick={() => setEditing(q)} aria-label="Edit"><Icon name="edit" size={15} /></button>
                 <button className="icon-btn icon-btn--sm" onClick={() => api.removeQuestion(q.id).catch((e) => notify(e.message, "bad"))} aria-label="Delete"><Icon name="trash" size={15} /></button>
               </div>
